@@ -14,8 +14,8 @@
 | 0 — Bootstrap | ✅ Done | Yes | `fa894aa` |
 | 1 — Lexer | ✅ Done | Yes | `0954b6f` |
 | 2 — AST & Parser | ✅ Done | Yes | `aaf0904` |
-| 3 — Semantic Analysis | ✅ Done | Yes | *(uncommitted)* |
-| 4 — Tree-Walking Interpreter | ⬜ Not started | — | — |
+| 3 — Semantic Analysis | ✅ Done | Yes | `309f197` |
+| 4 — Tree-Walking Interpreter | ✅ Done | Yes | *(uncommitted)* |
 | 5 — LLVM Codegen | ⬜ Not started | — | — |
 | 6 — Compile Pipeline & CLI | ⬜ Not started | — | — |
 | 7 — Benchmark Suite (20 problems) | ⬜ Not started | — | — |
@@ -59,10 +59,20 @@
 - 16 sema unit tests (6 valid-program cases, 10 invalid-program cases each asserting the specific error variant) plus 20 tests type-checking the actual Phase 7 benchmark programs (see below).
 - **All 20 P0 benchmark programs were written now** (`tests/benchmarks/*.nx`) — earlier than Phase 7's own file-creation step — because Phase 3's exit gate requires them to exist and type-check; this is deliberate, catching any P0 grammar/sema gaps against real DSA solutions before the interpreter or LLVM backend get built on top. Algorithmic correctness was verified by hand (no interpreter exists yet to execute them) — runtime confirmation is Phase 4/7's job. Covers: binary search (+first/last occurrence), two-pointer (two-sum, reverse, dedupe), all four classic sorts, merge sort's recursive scratch-buffer allocation, quicksort's in-place partition, 5 recursion problems (factorial, naive/memoized fibonacci, fast exponentiation, GCD), and 4 DP problems (climbing stairs, coin change, 0/1 knapsack via a flattened 1D array, LIS, Kadane's).
 - **Exit gate** ("all 20 benchmark programs type-check with zero errors; each invalid-program test produces exactly the expected error category"): met.
-- Not yet committed.
+- Commit: `309f197` (pushed to `origin/main`).
 
-### Phase 4 — Tree-Walking Interpreter ⬜
-Not started.
+### Phase 4 — Tree-Walking Interpreter ✅
+- `Value` enum (`src/interp/value.rs`): `Int`/`Float`/`Bool`/`Str`/`Array(Rc<RefCell<Vec<Value>>>)`/`Void`, plus pure helpers (`default_value`, `format_value`, `numeric_op`/`numeric_cmp`) kept separate from the evaluator itself.
+- `Environment` (`src/interp/mod.rs`): parent-linked scope chain via `Rc<Environment>`, mirroring sema's scope-stack structure exactly (same `exec_scoped` wrapping pattern as sema's `check_scoped_stmt`) so behavior can't diverge from what type-checked.
+- Direct AST walk, no bytecode layer. Functions get a fresh frame parented to *globals* (not the caller's locals) on every call — ANX functions aren't closures, matching sema's per-function scoping. Recursion rides Rust's own call stack.
+- Control flow (`Flow::Normal` / `Flow::Return(Value)`) threads early return up through nested blocks/loops without exceptions.
+- `print()` routes through an injectable output sink (a closure) rather than a hardcoded `println!` — real usage defaults to stdout, but this is what let tests assert on captured program output directly, without needing Phase 6's CLI or a subprocess.
+- Runtime errors (`RuntimeError`, via `thiserror`) for the two cases the plan calls out: array index out of bounds and int division/modulo by zero — plus one more found while implementing this phase: negative `new int[n]` size. These return `Err`, not a panic; every other failure mode is asserted as sema-impossible (`unreachable!`/`panic!` with a comment naming the guarantee), since the interpreter only ever runs sema-validated programs.
+- **Fixed a real cross-phase bug found while designing this phase**: sema's `is_lvalue` previously accepted `Expr::FieldAccess` as a valid assignment target, meaning `arr.length = 5;` would type-check — but `.length` is a computed property with nothing to actually assign to. Narrowed `is_lvalue` to `Ident`/`Index` only, added a sema regression test.
+- 14 construct-level unit tests (arithmetic, comparisons, `&&`/`||` short-circuiting verified via a side-effecting stub that must *not* run, if/else-if/else, while, for, recursion, array reference semantics across a function call, `new int[n]` zero-initialization) plus 4 runtime-error tests, plus all 20 benchmark programs run end-to-end.
+- **All 20 benchmark expected outputs were hand-traced** (documented per-program in the test file) and matched exactly on the first run — this cross-validates both the manual algorithm tracing from Phase 3 and the interpreter's correctness, and effectively produces the `.expected` content Phase 7 will formalize into files.
+- **Exit gate** ("all 20 benchmark programs produce correct output when run through the interpreter"): met.
+- Not yet committed.
 
 ### Phase 5 — LLVM Codegen ⬜
 Not started.
@@ -83,4 +93,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 - **2026-07-08** — Phase 0 (Bootstrap) complete. Commit `fa894aa`, pushed.
 - **2026-07-08** — Phase 1 (Lexer) complete. Commit `0954b6f`, pushed.
 - **2026-07-08** — Phase 2 (AST & Parser) complete. Commit `aaf0904`, pushed.
-- **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Not yet committed.
+- **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Commit `309f197`, pushed.
+- **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Not yet committed.

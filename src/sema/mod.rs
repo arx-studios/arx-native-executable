@@ -60,8 +60,11 @@ pub fn analyze(program: &Program) -> Result<SemaResult, Vec<SemaError>> {
     Checker::new().run(program)
 }
 
+// `FieldAccess` is deliberately excluded: `.length` is P0's only field, and
+// it's a computed property (array length), not stored state — there's
+// nothing for `arr.length = 5;` to actually assign to.
 fn is_lvalue(e: &Expr) -> bool {
-    matches!(e, Expr::Ident { .. } | Expr::Index { .. } | Expr::FieldAccess { .. })
+    matches!(e, Expr::Ident { .. } | Expr::Index { .. })
 }
 
 struct Checker {
@@ -447,6 +450,22 @@ mod tests {
     #[test]
     fn errors_on_invalid_assignment_target() {
         let errors = expect_errors("void main() { int x = 1; 5 = x; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::InvalidAssignTarget { .. })));
+    }
+
+    #[test]
+    fn errors_on_assigning_to_array_length() {
+        // .length is computed, not stored — there's nothing to assign to.
+        let errors = expect_errors(
+            r#"
+            void main() {
+                int[] nums = [1, 2, 3];
+                nums.length = 5;
+            }
+            "#,
+        );
         assert!(errors
             .iter()
             .any(|e| matches!(e, SemaError::InvalidAssignTarget { .. })));
