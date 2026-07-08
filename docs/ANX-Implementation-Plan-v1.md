@@ -1,6 +1,6 @@
 # ANX — Implementation Plan (v1)
 
-**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md)
+**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Progress-v1.md](ANX-Progress-v1.md)
 **Scope:** P0 only (frontend → interpreter → LLVM backend → 20-problem benchmark suite). P1 (collections/classes) is staged at the end for continuity but is explicitly out of v1 scope per the PRD.
 **Host language for the compiler itself:** Rust.
 

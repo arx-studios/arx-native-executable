@@ -1,6 +1,6 @@
 # ANX — Tech Stack (v1)
 
-**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md)
+**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Progress-v1.md](ANX-Progress-v1.md)
 **Purpose:** exactly what tool/crate/library is used at each step of the Implementation Plan, and why — so there's no ambiguity when a phase starts.
 
 ---

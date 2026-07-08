@@ -1,6 +1,6 @@
 # ANX — Usage Flow (v1)
 
-**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md)
+**Companion to:** [ANX-PRD-v1.md](ANX-PRD-v1.md), [ANX-Syntax-Draft-v1.md](ANX-Syntax-Draft-v1.md), [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Progress-v1.md](ANX-Progress-v1.md)
 **Scope:** what it's like to actually use ANX once P0 is done. No distribution/packaging (PRD non-goal #5) — this describes running `anx` as a locally built tool, not something installed from a package registry.
 
 ---
