@@ -15,8 +15,8 @@
 | 1 — Lexer | ✅ Done | Yes | `0954b6f` |
 | 2 — AST & Parser | ✅ Done | Yes | `aaf0904` |
 | 3 — Semantic Analysis | ✅ Done | Yes | `309f197` |
-| 4 — Tree-Walking Interpreter | ✅ Done | Yes | *(uncommitted)* |
-| 5 — LLVM Codegen | ⬜ Not started | — | — |
+| 4 — Tree-Walking Interpreter | ✅ Done | Yes | `dc1180b` |
+| 5 — LLVM Codegen | ✅ Done | Yes | *(uncommitted)* |
 | 6 — Compile Pipeline & CLI | ⬜ Not started | — | — |
 | 7 — Benchmark Suite (20 problems) | ⬜ Not started | — | — |
 | 8 — Dogfooding (10 real problems) | ⬜ Not started | — | — |
@@ -72,10 +72,20 @@
 - 14 construct-level unit tests (arithmetic, comparisons, `&&`/`||` short-circuiting verified via a side-effecting stub that must *not* run, if/else-if/else, while, for, recursion, array reference semantics across a function call, `new int[n]` zero-initialization) plus 4 runtime-error tests, plus all 20 benchmark programs run end-to-end.
 - **All 20 benchmark expected outputs were hand-traced** (documented per-program in the test file) and matched exactly on the first run — this cross-validates both the manual algorithm tracing from Phase 3 and the interpreter's correctness, and effectively produces the `.expected` content Phase 7 will formalize into files.
 - **Exit gate** ("all 20 benchmark programs produce correct output when run through the interpreter"): met.
-- Not yet committed.
+- Commit: `dc1180b` (pushed to `origin/main`).
 
-### Phase 5 — LLVM Codegen ⬜
-Not started.
+### Phase 5 — LLVM Codegen ✅
+- `Codegen<'ctx>` (`src/codegen/mod.rs`) using inkwell 0.9.0 / LLVM 21: one `Context`/`Module`/`Builder` per compilation, scoped-alloca variable tracking mirroring sema/interp's scope-stack pattern exactly, entry-block alloca placement (standard practice so loop bodies never grow the stack per iteration).
+- Runtime declarations (`src/codegen/runtime.rs`) for libc `malloc`/`calloc` plus five C shim functions; the actual C implementations live in `src/codegen/runtime.c` (not yet compiled/linked anywhere — that's Phase 6).
+- Control flow lowered to basic blocks with explicit "did this block terminate" tracking threaded through if/while/for, matching sema's return-completeness analysis exactly (an if/else where both branches return correctly propagates as terminated; the resulting unreachable merge block still gets an `unreachable` terminator so the module verifies).
+- **Two deliberate design changes from this doc's original Phase 5 sketch, made during implementation and worth flagging**:
+  - **Arrays are by-value `{i64 length, ptr data}` structs, not pointers-to-a-heap-allocated-struct.** LLVM 21's opaque pointers mean `data`'s LLVM type never encodes the element type anyway, so there's no benefit to heap-allocating the wrapper — passing the small struct by value (copying the `length`/`data` pair) still gives correct reference semantics for the underlying array, since the copied `data` pointer targets the same malloc'd buffer. Only the data buffer itself is heap-allocated. `new int[n]` uses `calloc` (auto-zeroing) instead of a manual zero-fill loop.
+  - **Bool is `i1` everywhere**, not "i1 widened to i8 for storage" as originally sketched — LLVM allows `i1` allocas/loads/stores/array-elements directly; the widen-to-i8 only happens at the one place C's ABI actually needs it, the `anx_print_bool` call boundary.
+  - Because opaque pointers erase element-type information from the LLVM value itself, codegen is the first pass that actually needs to consult sema's `SemaResult.types` side table (the interpreter never needed it, since Rust's own runtime `Value` enum self-describes) — this is the concrete payoff of the shared-AST/side-table design from Implementation Plan §1.
+- 20 construct-level tests (`Module::verify()` only) plus all 20 benchmark programs emitting verifiable IR — Phase 5's literal exit gate.
+- **Went beyond the exit gate**: `Module::verify()` only checks IR is well-formed, not logically correct. Added 6 JIT-execution tests (via inkwell's `create_jit_execution_engine`) that actually *run* compiled functions and check results — factorial(5)=120, fibNaive(10)=55, gcd(48,18)=6, power(2,10)=1024, climbStairs(5)=8 (exercises `new int[n]`/calloc/GEP internally), Kadane's max-subarray=6 (exercises array literals + while loop). JIT tests are restricted to scalar-only function signatures — an array *parameter* is a by-value LLVM struct whose C ABI lowering isn't safe to hand-match from a raw Rust function pointer; functions using arrays only as internal locals avoid that risk while still exercising the array logic.
+- **Exit gate** ("every construct in the P0 feature list emits verifiable LLVM IR"): met, and additionally verified logically correct on 6 representative cases via JIT.
+- Not yet committed.
 
 ### Phase 6 — Compile Pipeline & CLI ⬜
 Not started.
@@ -94,4 +104,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 - **2026-07-08** — Phase 1 (Lexer) complete. Commit `0954b6f`, pushed.
 - **2026-07-08** — Phase 2 (AST & Parser) complete. Commit `aaf0904`, pushed.
 - **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Commit `309f197`, pushed.
-- **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Not yet committed.
+- **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Commit `dc1180b`, pushed.
+- **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Not yet committed.
