@@ -13,8 +13,8 @@
 |---|---|---|---|
 | 0 — Bootstrap | ✅ Done | Yes | `fa894aa` |
 | 1 — Lexer | ✅ Done | Yes | `0954b6f` |
-| 2 — AST & Parser | ✅ Done | Yes | *(uncommitted)* |
-| 3 — Semantic Analysis | ⬜ Not started | — | — |
+| 2 — AST & Parser | ✅ Done | Yes | `aaf0904` |
+| 3 — Semantic Analysis | ✅ Done | Yes | *(uncommitted)* |
 | 4 — Tree-Walking Interpreter | ⬜ Not started | — | — |
 | 5 — LLVM Codegen | ⬜ Not started | — | — |
 | 6 — Compile Pipeline & CLI | ⬜ Not started | — | — |
@@ -48,10 +48,18 @@
 - Parser error recovery: minimal, first error wins, reported with line number (`ParseError` via `thiserror`) — matches the plan's P0 approach.
 - 18 unit tests: per-construct AST-shape assertions (var decl, arrays, array creation, recursion, if/else-if/else, while, for, lvalue assignment, right-associativity, field access, precedence), 2 error-case tests, and the full variables/arrays/functions/control-flow/binary-search samples from the syntax draft parsed end-to-end.
 - **Exit gate** ("every code sample in the syntax draft — excluding classes/collections/try-catch — parses without error"): met.
-- Not yet committed.
+- Commit: `aaf0904` (pushed to `origin/main`).
 
-### Phase 3 — Semantic Analysis ⬜
-Not started.
+### Phase 3 — Semantic Analysis ✅
+- Symbol table (`src/sema/symtab.rs`): scope stack + a separate function-signature table, supporting push/pop scope, var declare/resolve (innermost-first), function declare/resolve.
+- Two-pass driver (`src/sema/mod.rs`): pass 1 hoists every function signature (so forward calls and recursion resolve) and checks a valid `void main()` exists; pass 2 walks declarations in source order, type-checking bodies and control-flow return-completeness.
+- Type-checking rules (`src/sema/types.rs`): expression type inference (`check_expr`) plus a contextual variant (`check_expr_against`) used wherever an expected type is already known (var decl initializers, call arguments, assignment RHS) — needed so array literals check element-by-element against the expected element type rather than only inferring from the first element.
+- AST annotated in place via two side tables per the Implementation Plan's shared-sema design: `SemaResult.types: HashMap<NodeId, Type>` (every expression's resolved type) and `SemaResult.var_refs: HashMap<NodeId, SymbolId>` (identifier → declaring symbol).
+- Error collection: unlike the lexer/parser, sema does **not** stop at the first error — every error in a pass is collected into `Vec<SemaError>`, per the plan's explicit requirement.
+- 16 sema unit tests (6 valid-program cases, 10 invalid-program cases each asserting the specific error variant) plus 20 tests type-checking the actual Phase 7 benchmark programs (see below).
+- **All 20 P0 benchmark programs were written now** (`tests/benchmarks/*.nx`) — earlier than Phase 7's own file-creation step — because Phase 3's exit gate requires them to exist and type-check; this is deliberate, catching any P0 grammar/sema gaps against real DSA solutions before the interpreter or LLVM backend get built on top. Algorithmic correctness was verified by hand (no interpreter exists yet to execute them) — runtime confirmation is Phase 4/7's job. Covers: binary search (+first/last occurrence), two-pointer (two-sum, reverse, dedupe), all four classic sorts, merge sort's recursive scratch-buffer allocation, quicksort's in-place partition, 5 recursion problems (factorial, naive/memoized fibonacci, fast exponentiation, GCD), and 4 DP problems (climbing stairs, coin change, 0/1 knapsack via a flattened 1D array, LIS, Kadane's).
+- **Exit gate** ("all 20 benchmark programs type-check with zero errors; each invalid-program test produces exactly the expected error category"): met.
+- Not yet committed.
 
 ### Phase 4 — Tree-Walking Interpreter ⬜
 Not started.
@@ -74,4 +82,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 
 - **2026-07-08** — Phase 0 (Bootstrap) complete. Commit `fa894aa`, pushed.
 - **2026-07-08** — Phase 1 (Lexer) complete. Commit `0954b6f`, pushed.
-- **2026-07-08** — Phase 2 (AST & Parser) complete. Not yet committed.
+- **2026-07-08** — Phase 2 (AST & Parser) complete. Commit `aaf0904`, pushed.
+- **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Not yet committed.

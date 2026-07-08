@@ -1,0 +1,8 @@
+int fibNaive(int n) {
+    if (n <= 1) return n;
+    return fibNaive(n - 1) + fibNaive(n - 2);
+}
+
+void main() {
+    print(fibNaive(10));
+}

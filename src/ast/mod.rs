@@ -219,4 +219,23 @@ impl Expr {
             | Expr::ArrayCreation { id, .. } => *id,
         }
     }
+
+    pub fn line(&self) -> usize {
+        match self {
+            Expr::IntLiteral { line, .. }
+            | Expr::FloatLiteral { line, .. }
+            | Expr::BoolLiteral { line, .. }
+            | Expr::StringLiteral { line, .. }
+            | Expr::Null { line, .. }
+            | Expr::Ident { line, .. }
+            | Expr::Binary { line, .. }
+            | Expr::Unary { line, .. }
+            | Expr::Assign { line, .. }
+            | Expr::Call { line, .. }
+            | Expr::Index { line, .. }
+            | Expr::FieldAccess { line, .. }
+            | Expr::ArrayLiteral { line, .. }
+            | Expr::ArrayCreation { line, .. } => *line,
+        }
+    }
 }

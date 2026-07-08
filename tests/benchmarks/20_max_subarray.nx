@@ -1,0 +1,23 @@
+int maxSubArray(int[] nums) {
+    int best = nums[0];
+    int current = nums[0];
+    int i = 1;
+    while (i < nums.length) {
+        int candidate = current + nums[i];
+        if (nums[i] > candidate) {
+            current = nums[i];
+        } else {
+            current = candidate;
+        }
+        if (current > best) {
+            best = current;
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+void main() {
+    int[] nums = [-2, 1, -3, 4, -1, 2, 1, -5, 4];
+    print(maxSubArray(nums));
+}

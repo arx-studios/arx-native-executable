@@ -1,0 +1,11 @@
+int power(int base, int exp) {
+    if (exp == 0) return 1;
+    int half = power(base, exp / 2);
+    int halfSquared = half * half;
+    if (exp % 2 == 0) return halfSquared;
+    return halfSquared * base;
+}
+
+void main() {
+    print(power(2, 10));
+}

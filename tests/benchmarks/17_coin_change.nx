@@ -1,0 +1,23 @@
+int coinChange(int[] coins, int amount) {
+    int[] dp = new int[amount + 1];
+    dp[0] = 0;
+    for (int i = 1; i <= amount; i = i + 1) {
+        int best = -1;
+        for (int j = 0; j < coins.length; j = j + 1) {
+            int c = coins[j];
+            if (c <= i && dp[i - c] != -1) {
+                int candidate = dp[i - c] + 1;
+                if (best == -1 || candidate < best) {
+                    best = candidate;
+                }
+            }
+        }
+        dp[i] = best;
+    }
+    return dp[amount];
+}
+
+void main() {
+    int[] coins = [1, 2, 5];
+    print(coinChange(coins, 11));
+}

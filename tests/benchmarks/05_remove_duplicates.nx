@@ -1,0 +1,20 @@
+int removeDuplicates(int[] arr) {
+    if (arr.length == 0) return 0;
+    int writeIdx = 1;
+    for (int readIdx = 1; readIdx < arr.length; readIdx = readIdx + 1) {
+        if (arr[readIdx] != arr[readIdx - 1]) {
+            arr[writeIdx] = arr[readIdx];
+            writeIdx = writeIdx + 1;
+        }
+    }
+    return writeIdx;
+}
+
+void main() {
+    int[] arr = [1, 1, 2, 2, 3];
+    int newLength = removeDuplicates(arr);
+    print(newLength);
+    print(arr[0]);
+    print(arr[1]);
+    print(arr[2]);
+}
