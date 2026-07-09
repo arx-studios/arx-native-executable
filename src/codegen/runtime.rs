@@ -14,7 +14,14 @@ pub struct RuntimeFns<'ctx> {
     pub print_float: FunctionValue<'ctx>,
     pub print_bool: FunctionValue<'ctx>,
     pub print_str: FunctionValue<'ctx>,
+    // Declared (and implemented in runtime.c) per the runtime-shim spec, but
+    // no P0 benchmark ever prints a raw array — codegen never emits a call
+    // to it. Kept for when a program does.
+    #[allow(dead_code)]
     pub print_array: FunctionValue<'ctx>,
+    pub panic_oob: FunctionValue<'ctx>,
+    pub panic_div_zero: FunctionValue<'ctx>,
+    pub panic_neg_size: FunctionValue<'ctx>,
 }
 
 impl<'ctx> RuntimeFns<'ctx> {
@@ -56,6 +63,18 @@ impl<'ctx> RuntimeFns<'ctx> {
             void_ty.fn_type(&[i64_ty.into(), ptr_ty.into()], false),
             None,
         );
+        let panic_oob = module.add_function(
+            "anx_panic_oob",
+            void_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+            None,
+        );
+        let panic_div_zero =
+            module.add_function("anx_panic_div_zero", void_ty.fn_type(&[], false), None);
+        let panic_neg_size = module.add_function(
+            "anx_panic_neg_size",
+            void_ty.fn_type(&[i64_ty.into()], false),
+            None,
+        );
 
         RuntimeFns {
             malloc,
@@ -65,6 +84,9 @@ impl<'ctx> RuntimeFns<'ctx> {
             print_bool,
             print_str,
             print_array,
+            panic_oob,
+            panic_div_zero,
+            panic_neg_size,
         }
     }
 }

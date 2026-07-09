@@ -6,7 +6,9 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::{AddressSpace, IntPredicate};
 use runtime::RuntimeFns;
 use std::collections::HashMap;
@@ -51,12 +53,37 @@ impl<'ctx> Codegen<'ctx> {
                 self.compile_function(f);
             }
         }
+        self.emit_c_main_wrapper();
+    }
+
+    /// ANX's `main` is `void`, but a native binary's entry point must be a
+    /// C-ABI `int main()` whose return value defines the process exit code.
+    /// The ANX function is emitted as `anx_main` (see `declare_function`);
+    /// this wrapper calls it and returns 0.
+    fn emit_c_main_wrapper(&mut self) {
+        let i32_ty = self.context.i32_type();
+        let main_fn = self
+            .module
+            .add_function("main", i32_ty.fn_type(&[], false), None);
+        let entry = self.context.append_basic_block(main_fn, "entry");
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_call(self.functions["main"], &[], "")
+            .unwrap();
+        self.builder
+            .build_return(Some(&i32_ty.const_int(0, false)))
+            .unwrap();
     }
 
     pub fn verify(&self) -> Result<(), String> {
         self.module.verify().map_err(|e| e.to_string())
     }
 
+    /// Debugging helper — dumps textual LLVM IR, used by test failure
+    /// messages. Only referenced from `#[cfg(test)]` code, so a non-test
+    /// build sees it as unused; kept outside that cfg gate since it's a
+    /// generally useful method on the type, not test-only logic.
+    #[allow(dead_code)]
     pub fn print_ir(&self) -> String {
         self.module.print_to_string().to_string()
     }
@@ -112,7 +139,12 @@ impl<'ctx> Codegen<'ctx> {
         } else {
             self.llvm_basic_type(&f.return_ty).fn_type(&param_types, false)
         };
-        let function = self.module.add_function(&f.name, fn_type, None);
+        // ANX `main` gets the LLVM symbol `anx_main` so the C-ABI `main`
+        // wrapper (see `emit_c_main_wrapper`) can own the real entry point.
+        // The `functions` map still keys by the ANX-source name, so calls
+        // resolve unchanged.
+        let symbol = if f.name == "main" { "anx_main" } else { &f.name };
+        let function = self.module.add_function(symbol, fn_type, None);
         self.functions.insert(f.name.clone(), function);
     }
 
@@ -159,6 +191,36 @@ impl<'ctx> Codegen<'ctx> {
             None => temp_builder.position_at_end(entry),
         }
         temp_builder.build_alloca(ty, name).unwrap()
+    }
+
+    /// Emits a runtime check: continue in a fresh block when `ok` holds,
+    /// otherwise call the given runtime panic function (which never
+    /// returns — it prints to stderr and exits 2, matching the
+    /// interpreter's RuntimeError behavior per docs/ANX-Usage-Flow-v1.md).
+    fn emit_runtime_guard(
+        &mut self,
+        ok: IntValue<'ctx>,
+        panic_fn: FunctionValue<'ctx>,
+        panic_args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+    ) {
+        let function = self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let ok_bb = self.context.append_basic_block(function, &format!("{name}.ok"));
+        let panic_bb = self
+            .context
+            .append_basic_block(function, &format!("{name}.panic"));
+        self.builder
+            .build_conditional_branch(ok, ok_bb, panic_bb)
+            .unwrap();
+        self.builder.position_at_end(panic_bb);
+        self.builder.build_call(panic_fn, panic_args, "").unwrap();
+        self.builder.build_unreachable().unwrap();
+        self.builder.position_at_end(ok_bb);
     }
 
     fn resolve_var(&self, scopes: &Scopes<'ctx>, name: &str) -> PointerValue<'ctx> {
@@ -462,16 +524,20 @@ impl<'ctx> Codegen<'ctx> {
                 BinOp::Add => self.builder.build_int_add(l, r, "addtmp").unwrap().into(),
                 BinOp::Sub => self.builder.build_int_sub(l, r, "subtmp").unwrap().into(),
                 BinOp::Mul => self.builder.build_int_mul(l, r, "multmp").unwrap().into(),
-                BinOp::Div => self
-                    .builder
-                    .build_int_signed_div(l, r, "divtmp")
-                    .unwrap()
-                    .into(),
-                BinOp::Mod => self
-                    .builder
-                    .build_int_signed_rem(l, r, "modtmp")
-                    .unwrap()
-                    .into(),
+                BinOp::Div => {
+                    self.emit_div_zero_guard(r);
+                    self.builder
+                        .build_int_signed_div(l, r, "divtmp")
+                        .unwrap()
+                        .into()
+                }
+                BinOp::Mod => {
+                    self.emit_div_zero_guard(r);
+                    self.builder
+                        .build_int_signed_rem(l, r, "modtmp")
+                        .unwrap()
+                        .into()
+                }
                 BinOp::Lt => self
                     .builder
                     .build_int_compare(IntPredicate::SLT, l, r, "lttmp")
@@ -546,6 +612,19 @@ impl<'ctx> Codegen<'ctx> {
             }
         };
         Some(result)
+    }
+
+    /// Int `/` and `%` by zero are UB at the LLVM level (and don't even trap
+    /// on AArch64 — hardware division by zero silently yields 0 there), so
+    /// an explicit check is the only way a compiled binary can match the
+    /// interpreter's division-by-zero error.
+    fn emit_div_zero_guard(&mut self, divisor: IntValue<'ctx>) {
+        let zero = self.context.i64_type().const_int(0, false);
+        let nonzero = self
+            .builder
+            .build_int_compare(IntPredicate::NE, divisor, zero, "nonzero")
+            .unwrap();
+        self.emit_runtime_guard(nonzero, self.runtime.panic_div_zero, &[], "div0");
     }
 
     fn codegen_short_circuit(
@@ -729,12 +808,31 @@ impl<'ctx> Codegen<'ctx> {
         scopes: &mut Scopes<'ctx>,
     ) -> PointerValue<'ctx> {
         let arr_val = self.codegen_expr(array, scopes).unwrap().into_struct_value();
+        let length = self
+            .builder
+            .build_extract_value(arr_val, 0, "arrlen")
+            .unwrap()
+            .into_int_value();
         let data_ptr = self
             .builder
             .build_extract_value(arr_val, 1, "dataptr")
             .unwrap()
             .into_pointer_value();
         let idx = self.codegen_expr(index, scopes).unwrap().into_int_value();
+
+        // One unsigned compare covers both bounds: a negative index wraps
+        // to a huge u64, so `(u64)idx < (u64)length` iff `0 <= idx < length`.
+        let in_bounds = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, length, "inbounds")
+            .unwrap();
+        self.emit_runtime_guard(
+            in_bounds,
+            self.runtime.panic_oob,
+            &[idx.into(), length.into()],
+            "oob",
+        );
+
         let elem_ty = self.array_elem_llvm_type(array);
         unsafe {
             self.builder
@@ -817,6 +915,18 @@ impl<'ctx> Codegen<'ctx> {
         let elem_size = self.context.i64_type().const_int(self.size_of_basic_type(elem_llvm_ty), false);
         let n = self.codegen_expr(size, scopes).unwrap().into_int_value();
 
+        let zero = self.context.i64_type().const_int(0, false);
+        let non_negative = self
+            .builder
+            .build_int_compare(IntPredicate::SGE, n, zero, "nonneg")
+            .unwrap();
+        self.emit_runtime_guard(
+            non_negative,
+            self.runtime.panic_neg_size,
+            &[n.into()],
+            "negsize",
+        );
+
         // calloc zero-initializes, so `new int[n]` never needs a manual
         // zero-fill loop over a runtime-determined length.
         let data_ptr = self
@@ -888,6 +998,34 @@ mod tests {
         assert_verifies("void main() { }");
     }
 
+    // The generated code references the runtime shim's panic functions
+    // (bounds/div-zero/negative-size guards), which only exist as C symbols
+    // after `anx build` links runtime.c. For in-process JIT execution, map
+    // them to Rust stubs instead — the happy-path tests below must never
+    // actually reach them, so they panic the test if called.
+    extern "C" fn jit_stub_panic_oob(index: i64, length: i64) {
+        panic!("JIT hit bounds panic: index {index}, length {length}");
+    }
+    extern "C" fn jit_stub_panic_div_zero() {
+        panic!("JIT hit division-by-zero panic");
+    }
+    extern "C" fn jit_stub_panic_neg_size(size: i64) {
+        panic!("JIT hit negative-array-size panic: {size}");
+    }
+
+    fn map_runtime_stubs(codegen: &Codegen, ee: &inkwell::execution_engine::ExecutionEngine) {
+        let mappings: [(&str, usize); 3] = [
+            ("anx_panic_oob", jit_stub_panic_oob as usize),
+            ("anx_panic_div_zero", jit_stub_panic_div_zero as usize),
+            ("anx_panic_neg_size", jit_stub_panic_neg_size as usize),
+        ];
+        for (name, addr) in mappings {
+            if let Some(f) = codegen.module().get_function(name) {
+                ee.add_global_mapping(&f, addr);
+            }
+        }
+    }
+
     /// JIT-executes a compiled function directly (bypassing `main`/`print`,
     /// which call into the not-yet-linked runtime shim) and returns its
     /// result. `Module::verify()` only checks IR is well-formed — this
@@ -908,6 +1046,7 @@ mod tests {
             .module()
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .expect("should create a JIT execution engine");
+        map_runtime_stubs(&codegen, &ee);
         unsafe {
             let f: inkwell::execution_engine::JitFunction<unsafe extern "C" fn(i64) -> i64> =
                 ee.get_function(func_name).expect("function should be found");
@@ -925,6 +1064,7 @@ mod tests {
             .module()
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .expect("should create a JIT execution engine");
+        map_runtime_stubs(&codegen, &ee);
         unsafe {
             let f: inkwell::execution_engine::JitFunction<unsafe extern "C" fn(i64, i64) -> i64> =
                 ee.get_function(func_name).expect("function should be found");
@@ -942,6 +1082,7 @@ mod tests {
             .module()
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .expect("should create a JIT execution engine");
+        map_runtime_stubs(&codegen, &ee);
         unsafe {
             let f: inkwell::execution_engine::JitFunction<unsafe extern "C" fn() -> i64> =
                 ee.get_function(func_name).expect("function should be found");

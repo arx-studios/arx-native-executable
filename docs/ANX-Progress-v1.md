@@ -16,8 +16,8 @@
 | 2 — AST & Parser | ✅ Done | Yes | `aaf0904` |
 | 3 — Semantic Analysis | ✅ Done | Yes | `309f197` |
 | 4 — Tree-Walking Interpreter | ✅ Done | Yes | `dc1180b` |
-| 5 — LLVM Codegen | ✅ Done | Yes | *(uncommitted)* |
-| 6 — Compile Pipeline & CLI | ⬜ Not started | — | — |
+| 5 — LLVM Codegen | ✅ Done | Yes | `7293657` |
+| 6 — Compile Pipeline & CLI | ✅ Done | Yes | *(uncommitted)* |
 | 7 — Benchmark Suite (20 problems) | ⬜ Not started | — | — |
 | 8 — Dogfooding (10 real problems) | ⬜ Not started | — | — |
 
@@ -85,10 +85,18 @@
 - 20 construct-level tests (`Module::verify()` only) plus all 20 benchmark programs emitting verifiable IR — Phase 5's literal exit gate.
 - **Went beyond the exit gate**: `Module::verify()` only checks IR is well-formed, not logically correct. Added 6 JIT-execution tests (via inkwell's `create_jit_execution_engine`) that actually *run* compiled functions and check results — factorial(5)=120, fibNaive(10)=55, gcd(48,18)=6, power(2,10)=1024, climbStairs(5)=8 (exercises `new int[n]`/calloc/GEP internally), Kadane's max-subarray=6 (exercises array literals + while loop). JIT tests are restricted to scalar-only function signatures — an array *parameter* is a by-value LLVM struct whose C ABI lowering isn't safe to hand-match from a raw Rust function pointer; functions using arrays only as internal locals avoid that risk while still exercising the array logic.
 - **Exit gate** ("every construct in the P0 feature list emits verifiable LLVM IR"): met, and additionally verified logically correct on 6 representative cases via JIT.
-- Not yet committed.
+- Commit: `7293657` (pushed to `origin/main`).
 
-### Phase 6 — Compile Pipeline & CLI ⬜
-Not started.
+### Phase 6 — Compile Pipeline & CLI ✅
+- `src/cli.rs`: `clap`-derived `anx check|run|build` subcommands over a shared `frontend()` (lex → parse → sema) helper, so error reporting/exit codes are identical across all three paths.
+- Exit codes match `docs/ANX-Usage-Flow-v1.md` exactly: `0` success, `1` any compile-time error (lex/parse/sema, reported with `{file}:{line}: {message}`), `2` runtime error.
+- **`anx build`**: `TargetMachine::write_to_file` emits a native object file, then a fresh `anx_runtime.c` (the shim, `include_str!`'d into the `anx` binary itself — a built `anx` needs no companion files, only a system C compiler) is written alongside it and both are hand-and-linked in one `cc` invocation, which pulls in libc and the platform's C startup code.
+- **ANX's `void main()` is emitted as the LLVM symbol `anx_main`, with a generated C-ABI `int main()` wrapper calling it and returning 0** — necessary because a native binary's real entry point must be an `int`-returning C `main`, which the language's own `void main()` convention (Usage Flow doc) can't be directly. The `functions` map still keys by the ANX-source name `"main"`, so this is invisible to the rest of codegen.
+- **Added the three runtime guards Phase 5 deferred**: LLVM codegen now emits explicit branches for array-bounds (`icmp ult` against length — a negative index wraps to a huge unsigned value, so one unsigned compare covers both bounds), int div/mod-by-zero, and negative `new int[n]` size, each branching to a call into one of three new `runtime.c` panic functions (`anx_panic_oob`/`anx_panic_div_zero`/`anx_panic_neg_size`) that print to stderr and `exit(2)`. Without these, a compiled binary would silently corrupt memory or hit LLVM-level UB on the exact cases the interpreter already catches cleanly — the plan's "both paths must behave identically" bar (Usage Flow doc) doesn't hold without them. JIT tests from Phase 5 map these three symbols to Rust stub functions (via `ExecutionEngine::add_global_mapping`) since the C shim isn't linked into the test binary; the stubs panic if actually hit, since JIT happy-path tests should never reach them.
+- 8 CLI integration tests (`tests/cli.rs`, `assert_cmd` + `predicates`, per the Tech Stack doc): `check`/`run` accept/reject valid and invalid programs with the right exit code and stderr content, `run` surfaces a runtime error at exit 2, `build` refuses to produce a binary on a compile error, and — the plan's literal exit gate — building `01_binary_search.nx` and executing the *resulting binary directly* (not through `anx`) produces the correct output, proving it's a genuine standalone executable per PRD Goal 3. One more test confirms the compiled path's new runtime guards produce the same exit-2 behavior as the interpreter.
+- **Went beyond the exit gate**: manually built and ran all 20 benchmark programs through the compiled path and diffed against the interpreter's output for each — all 20 match exactly (not yet a committed automated test; the full dual-path suite with `.expected` fixtures is Phase 7's job, and this doc's own precedent of front-running phases was intentionally *not* repeated here since Phase 6's exit gate doesn't require it). Also manually confirmed all three runtime guards fire correctly in real compiled binaries with the interpreter's exact error text.
+- **Exit gate** ("`anx build` on the binary-search benchmark produces a standalone native binary that runs and produces correct output, verifiable with `file`"): met.
+- Not yet committed.
 
 ### Phase 7 — Benchmark Suite ⬜
 Not started. 0/20 benchmark problems passing.
@@ -105,4 +113,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 - **2026-07-08** — Phase 2 (AST & Parser) complete. Commit `aaf0904`, pushed.
 - **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Commit `309f197`, pushed.
 - **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Commit `dc1180b`, pushed.
-- **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Not yet committed.
+- **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Commit `7293657`, pushed.
+- **2026-07-08** — Phase 6 (Compile Pipeline & CLI) complete. `anx check|run|build` all working with matching exit codes (0/1/2); `anx build` links a C runtime shim compiled fresh each run, and now also emits the array-bounds/div-zero/negative-size runtime guards Phase 5 deferred, so the compiled path fails identically to the interpreter. All 20 benchmarks manually verified to match between interpreter and compiled binary. Not yet committed.

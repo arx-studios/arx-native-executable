@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 void anx_print_int(int64_t value) {
     printf("%lld\n", (long long)value);
@@ -31,4 +32,25 @@ void anx_print_array(int64_t length, const int64_t *data) {
         printf("%lld", (long long)data[i]);
     }
     printf("]\n");
+}
+
+/* Runtime panics — message text and exit code 2 deliberately match the
+ * interpreter's RuntimeError output, so both execution paths fail
+ * identically (per docs/ANX-Usage-Flow-v1.md). */
+
+void anx_panic_oob(int64_t index, int64_t length) {
+    fprintf(stderr, "runtime error: array index %lld out of bounds for length %lld\n",
+            (long long)index, (long long)length);
+    exit(2);
+}
+
+void anx_panic_div_zero(void) {
+    fprintf(stderr, "runtime error: division by zero\n");
+    exit(2);
+}
+
+void anx_panic_neg_size(int64_t size) {
+    fprintf(stderr, "runtime error: array size must be non-negative, found %lld\n",
+            (long long)size);
+    exit(2);
 }
