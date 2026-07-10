@@ -17,8 +17,8 @@
 | 3 — Semantic Analysis | ✅ Done | Yes | `309f197` |
 | 4 — Tree-Walking Interpreter | ✅ Done | Yes | `dc1180b` |
 | 5 — LLVM Codegen | ✅ Done | Yes | `7293657` |
-| 6 — Compile Pipeline & CLI | ✅ Done | Yes | *(uncommitted)* |
-| 7 — Benchmark Suite (20 problems) | ⬜ Not started | — | — |
+| 6 — Compile Pipeline & CLI | ✅ Done | Yes | `0252e9a` |
+| 7 — Benchmark Suite (20 problems) | ✅ Done | Yes | *(uncommitted)* |
 | 8 — Dogfooding (10 real problems) | ⬜ Not started | — | — |
 
 ---
@@ -96,10 +96,15 @@
 - 8 CLI integration tests (`tests/cli.rs`, `assert_cmd` + `predicates`, per the Tech Stack doc): `check`/`run` accept/reject valid and invalid programs with the right exit code and stderr content, `run` surfaces a runtime error at exit 2, `build` refuses to produce a binary on a compile error, and — the plan's literal exit gate — building `01_binary_search.nx` and executing the *resulting binary directly* (not through `anx`) produces the correct output, proving it's a genuine standalone executable per PRD Goal 3. One more test confirms the compiled path's new runtime guards produce the same exit-2 behavior as the interpreter.
 - **Went beyond the exit gate**: manually built and ran all 20 benchmark programs through the compiled path and diffed against the interpreter's output for each — all 20 match exactly (not yet a committed automated test; the full dual-path suite with `.expected` fixtures is Phase 7's job, and this doc's own precedent of front-running phases was intentionally *not* repeated here since Phase 6's exit gate doesn't require it). Also manually confirmed all three runtime guards fire correctly in real compiled binaries with the interpreter's exact error text.
 - **Exit gate** ("`anx build` on the binary-search benchmark produces a standalone native binary that runs and produces correct output, verifiable with `file`"): met.
-- Not yet committed.
+- Commit: `0252e9a` (pushed to `origin/main`).
 
-### Phase 7 — Benchmark Suite ⬜
-Not started. 0/20 benchmark problems passing.
+### Phase 7 — Benchmark Suite ✅
+- All the substantive work here was already done in earlier phases (the 20 `.nx` programs in Phase 3, the hand-traced expected outputs cross-validated by the interpreter in Phase 4, the compiled-path match manually confirmed in Phase 6) — this phase's job was formalizing that into standing, committed fixtures and an automated test rather than a one-time manual check.
+- Added `tests/benchmarks/NN_name.expected` for all 20 programs, values taken directly from the already-verified `benchmark_produces_output!` macro invocations in `src/interp/mod.rs` (Phase 4) rather than re-derived, to avoid a transcription error silently diverging from what was actually proven correct.
+- `tests/integration.rs`: one test that, for every benchmark, runs it through `anx run` (spawned via `assert_cmd`) *and* builds + directly executes the resulting binary (via `anx build` then `std::process::Command` on the output path, same pattern as `tests/cli.rs`'s standalone-binary check), diffing both against the paired `.expected` file. Collects every mismatch before failing (rather than stopping at the first) so a regression run shows the full picture in one go.
+- **All 20 programs pass on both the interpreter and the compiled path** — this is simultaneously Phase 7's exit gate and the PRD's actual leading success metric ("% of the 20-problem benchmark suite that compiles and runs correctly — target 100% on the P0 feature set before calling v1 done"). **This completes the entire P0 milestone** (PRD Goal 1); only Phase 8 (Dogfooding — a usage phase, not further coding) remains before v1 is done.
+- **Exit gate** ("100% of the 20 programs pass on both the interpreter and the compiled path"): met.
+- Not yet committed.
 
 ### Phase 8 — Dogfooding ⬜
 Not started. 0/10 real DSA problems solved in ANX.
@@ -114,4 +119,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 - **2026-07-08** — Phase 3 (Semantic Analysis) complete, incl. writing all 20 P0 benchmark `.nx` programs ahead of schedule. Commit `309f197`, pushed.
 - **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Commit `dc1180b`, pushed.
 - **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Commit `7293657`, pushed.
-- **2026-07-08** — Phase 6 (Compile Pipeline & CLI) complete. `anx check|run|build` all working with matching exit codes (0/1/2); `anx build` links a C runtime shim compiled fresh each run, and now also emits the array-bounds/div-zero/negative-size runtime guards Phase 5 deferred, so the compiled path fails identically to the interpreter. All 20 benchmarks manually verified to match between interpreter and compiled binary. Not yet committed.
+- **2026-07-08** — Phase 6 (Compile Pipeline & CLI) complete. `anx check|run|build` all working with matching exit codes (0/1/2); `anx build` links a C runtime shim compiled fresh each run, and now also emits the array-bounds/div-zero/negative-size runtime guards Phase 5 deferred, so the compiled path fails identically to the interpreter. All 20 benchmarks manually verified to match between interpreter and compiled binary. Commit `0252e9a`, pushed.
+- **2026-07-08** — Phase 7 (Benchmark Suite) complete: formalized the already-verified 20 programs into `.expected` fixtures + `tests/integration.rs`. All 20 pass on both interpreter and compiled path — **this is the PRD's leading success metric and completes the entire P0 milestone.** Only Phase 8 (Dogfooding) remains. Not yet committed.
