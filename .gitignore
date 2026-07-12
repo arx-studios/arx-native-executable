@@ -1,3 +1,4 @@
 /target
+/dogfood
 .DS_Store
 .claude/settings.local.json
