@@ -1,78 +1,116 @@
-### Same as PRD (for now)
-# ANX — Product Requirements Document (v1)
+# ANX
 
 *ANX: Arx Native eXecutable*
 
-**Owner:** Ayushman Das, ARX Studios
-**Status:** Draft
-**Last updated:** July 8, 2026
+A small, real compiled language purpose-built for practicing data structures and algorithms — Java-like syntax, instant tree-walking interpretation for fast iteration, and genuine LLVM-backed native compilation so it's never just a toy.
 
-## Problem Statement
+## Why
 
-CS students learning data structures and algorithms typically practice in general-purpose languages (Python, Java, C++) that weren't designed for the task. Python hides memory and complexity behavior behind abstraction; Java and C++ require heavy boilerplate for structures (stacks, queues, trees, graphs) that DSA problems use constantly. There's no language purpose-built for algorithm practice that's also a real, compiled language — not a toy interpreter — with the data structures DSA problems actually need built in as first-class citizens. Every serious CS student globally hits this friction; the cost is wasted setup time and shallow understanding of what their code actually does at runtime.
+CS students practicing DSA usually reach for Python, Java, or C++ — none of which were designed for the job. Python hides memory/runtime behavior behind abstraction; Java and C++ demand heavy boilerplate for the exact structures (stacks, queues, trees, graphs) DSA problems use constantly. ANX is an attempt at a language purpose-built for this: real compiled semantics, DSA-shaped built-ins, no setup ceremony. Full rationale in the [PRD](docs/ANX-PRD-v1.md).
 
-## Goals
+## Status
 
-1. Ship a working ANX v1 compiler (interpreter + LLVM-backed native compilation) that correctly runs a 20-problem benchmark suite of classic DSA patterns end to end.
-2. Support a minimal v1 language surface first: variables, control flow, functions/recursion, and arrays — proving the full pipeline end to end before adding collections or classes.
-3. Validate the language is genuinely compiled, not just interpreted — produce real native binaries via LLVM for the benchmark suite.
-4. Personally dogfood ANX for real DSA practice (Ayushman uses it for at least 10 problems) to validate usability before considering any external audience.
-5. Establish a clean, extensible compiler architecture (shared AST/semantic analysis feeding both the interpreter and the LLVM backend) so P1 features don't require a rewrite.
+**P0 is complete** — lexer through native codegen, all 20 benchmark problems passing on both the interpreter and the compiled path. Currently in Phase 8: dogfooding (real DSA practice, tracking friction for P1). [docs/ANX-Progress-v1.md](docs/ANX-Progress-v1.md) is the authoritative, continuously-updated source of truth for what's actually built — treat anything below as a snapshot, not a promise.
 
-## Non-Goals (v1)
+| Component | Status |
+|---|---|
+| Lexer, parser, AST | ✅ |
+| Semantic analysis (shared by both backends) | ✅ |
+| Tree-walking interpreter | ✅ |
+| LLVM 21 native codegen | ✅ |
+| Compile pipeline + CLI (`anx check/run/build`) | ✅ |
+| 20-problem benchmark suite, both paths | ✅ 20/20 |
+| Dogfooding (10 real DSA problems) | 🟡 1/10 |
 
-1. **AI tutoring / Socratic questioning layer** — explicitly deferred; the core language has to work and be worth using before layering AI on top.
-2. **Execution visualizer** — explicitly deferred for the same reason; a real differentiator, but not the v1 wedge.
-3. **IDE tooling** (syntax highlighting, LSP, autocomplete) — compiler correctness comes first; tooling is worthless on top of a language that doesn't work yet.
-4. **Multi-file projects / module system** — DSA problems are single-file by nature; no need to solve project structure yet.
-5. **Distribution, marketing, or external users** — v1's success criterion is "does this actually work and is it worth using," not adoption.
+## Example
 
-## User Stories
+```
+int binarySearch(int[] arr, int target) {
+    int lo = 0;
+    int hi = arr.length - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (arr[mid] == target) return mid;
+        else if (arr[mid] < target) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
 
-- As a CS student practicing DSA, I want real recursion support so I can implement DFS, backtracking, and divide-and-conquer naturally.
-- As a CS student, I want built-in Stack, Queue, and HashMap types so I'm not hand-rolling data structures to solve a problem about algorithms, not plumbing.
-- As a CS student, I want my program to compile to a real native binary so I know I'm working with a genuine language, not a toy.
-- As a CS student iterating on a solution, I want instant interpreted execution so I'm not waiting on a compile step every time I test a change.
-- As the language's author, I want a benchmark suite of real DSA problems implemented in ANX so I can verify the language is actually complete enough to be useful, not just technically working.
+void main() {
+    int[] nums = [1, 3, 5, 7, 9, 11];
+    print(binarySearch(nums, 7));
+}
+```
 
-## Requirements
+## Getting started
 
-### Must-Have (P0) — the basics
-- Lexer + parser for Java-like ANX syntax
-- AST + shared semantic analysis pass
-- Tree-walking interpreter for instant execution
-- LLVM IR codegen for: variables, arithmetic/logic, control flow (if/else, while, for), functions, recursion, arrays
-- Compile pipeline: ANX source → LLVM IR → native binary via LLVM's backend
-- 15–20 problem benchmark suite passing on both interpreter and compiled paths, using only primitives/arrays/recursion (binary search, two-pointer, sorting, basic DP) — no built-in collections required
+**Prerequisites:** Rust (stable, via [rustup](https://rustup.rs)), LLVM 21 (`brew install llvm@21` on macOS), and a system C compiler (Xcode Command Line Tools on macOS) to link the runtime shim.
 
-### Next Phase (P1) — data structures & OOP
-- Built-in List, Stack, Queue, HashMap
-- Generics for collections (`List<T>`, `Stack<T>`)
-- Classes: fields, constructors, methods
-- Tree and Graph as standard-library types
-- Clearer compiler error messages with line numbers
+```bash
+git clone <this repo>
+cd anx
+export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
+cargo build --release
+```
 
-### Future Considerations (P2)
-- Interfaces and virtual dispatch
-- AI Socratic tutor layer
-- Step-by-step execution visualizer
-- C++ transpile output as a "see the real code" teaching artifact
-- IDE integration / LSP
-- Package/module system
+Put the binary on your `PATH` — permanently (add to `~/.zshrc`) or for the current session only:
+```bash
+export PATH="$PWD/target/release:$PATH"
+```
 
-## Success Metrics
+## Usage
 
-**Leading:** % of the 20-problem benchmark suite that compiles and runs correctly — target 100% on the P0 feature set before calling v1 done.
-**Leading:** Ayushman solves at least 10 real DSA problems in ANX during personal placement prep, without falling back to Java.
-**Lagging:** Whether ANX keeps getting used for practice a month after v1 ships, unprompted — the only adoption signal that matters at N=1 before any external users exist.
+ANX source files use the `.nx` extension. Every program needs exactly one top-level `void main()`.
 
-## Open Questions
+```bash
+anx check solve.nx                       # lex + parse + type-check only
+anx run solve.nx                         # instant interpreted execution
+anx build solve.nx -o solve && ./solve   # compile to a genuine native binary
+```
 
-- **(Engineering, blocking)** Memory model: garbage-collected like Java, manual like C++, or a simplified "leak on exit" model appropriate for short-lived DSA scripts? This affects both syntax and the LLVM codegen design.
-- **(Engineering, blocking)** Do the interpreter and LLVM backend share one semantic analysis pass, or diverge? Sharing is less work long-term but couples the two paths early.
-- **(Engineering, non-blocking)** Generics implementation strategy for LLVM — monomorphization (like Rust/C++ templates) vs. type erasure (like Java)? Can defer to the P1 phase.
-- **(Design, next deliverable)** Full grammar and syntax — drafted as a companion doc alongside this PRD.
+Exit codes: `0` success, `1` compile-time error, `2` runtime error — identical across the interpreted and compiled paths. Full walkthrough in [docs/ANX-Usage-Flow-v1.md](docs/ANX-Usage-Flow-v1.md).
 
-## Timeline Considerations
+## Testing
 
-No external deadline. The real constraint is solo-dev bandwidth during placement season, capstone wrap-up, and an active internship — this is nights/weekends work. Suggested phase order: frontend (lexer/parser/AST) → interpreter → LLVM codegen for primitives/control-flow/functions/arrays → basics benchmark suite passing → only then collections (P1) → only then classes/generics (P1).
+```bash
+cargo test
+```
+
+150 unit tests (lexer, parser, sema, interpreter, codegen — including JIT-executed correctness checks, not just IR verification) + 8 CLI integration tests + the full 20-problem benchmark suite, each run through both the interpreter and a built-then-executed binary.
+
+## Project layout
+
+```
+src/
+├── lexer/      hand-written scanner
+├── ast/        shared AST — walked by parser, sema, interpreter, and codegen
+├── parser/     recursive-descent + precedence-climbing parser
+├── sema/       shared semantic analysis (symbol table, type checking)
+├── interp/     tree-walking interpreter
+├── codegen/    LLVM IR codegen (inkwell) + the C runtime shim
+└── cli.rs      anx check|run|build
+tests/
+├── benchmarks/ the 20 P0 benchmark programs + expected output
+├── cli.rs      CLI-level smoke tests
+└── integration.rs   dual-path (interpreter + compiled) benchmark suite
+dogfood/        exploratory practice problems — not version-controlled
+```
+
+## Docs
+
+- [Product Requirements Doc](docs/ANX-PRD-v1.md) — problem statement, goals, P0/P1/P2 scope
+- [Syntax Draft](docs/ANX-Syntax-Draft-v1.md) — language grammar and worked examples
+- [Implementation Plan](docs/ANX-Implementation-Plan-v1.md) — phase-by-phase build plan and key engineering decisions
+- [Tech Stack](docs/ANX-Tech-Stack-v1.md) — exactly what's used at each step, and why
+- [Usage Flow](docs/ANX-Usage-Flow-v1.md) — the full CLI / user-facing walkthrough
+- [Progress Tracker](docs/ANX-Progress-v1.md) — what's actually built, phase by phase
+- [Dogfooding Notes](docs/ANX-Dogfooding-Notes-v1.md) — real-practice log and friction points
+
+## Roadmap
+
+P1 (built-in `List`/`Stack`/`Queue`/`HashMap`, generics, classes) and P2 (interfaces, an AI Socratic tutor layer, an execution visualizer, IDE tooling) are scoped in the [PRD](docs/ANX-PRD-v1.md) but not started — P0 has to actually be worth using first.
+
+---
+
+Solo, nights-and-weekends project. No external deadline, no distribution plans yet — the only bar right now is being good enough that its own author reaches for it over Java during placement prep.
