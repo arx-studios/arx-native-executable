@@ -1,6 +1,6 @@
 # ANX — Progress Tracker (v1)
 
-**Companion to:** [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md)
+**Companion to:** [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Dogfooding-Notes-v1.md](ANX-Dogfooding-Notes-v1.md)
 **Purpose:** living record of what's actually been built, phase by phase, against the Implementation Plan's exit gates — check this before assuming any phase's state; it's the source of truth over memory of past conversations.
 
 **How to update:** when a phase's exit gate is met, flip its row in the table below, fill in its detail section, and append one line to the changelog at the bottom with the date and commit hash.
@@ -18,8 +18,8 @@
 | 4 — Tree-Walking Interpreter | ✅ Done | Yes | `dc1180b` |
 | 5 — LLVM Codegen | ✅ Done | Yes | `7293657` |
 | 6 — Compile Pipeline & CLI | ✅ Done | Yes | `0252e9a` |
-| 7 — Benchmark Suite (20 problems) | ✅ Done | Yes | *(uncommitted)* |
-| 8 — Dogfooding (10 real problems) | ⬜ Not started | — | — |
+| 7 — Benchmark Suite (20 problems) | ✅ Done | Yes | `137141a` |
+| 8 — Dogfooding (10 real problems) | 🟡 In progress | 0/10 | — |
 
 ---
 
@@ -104,10 +104,13 @@
 - `tests/integration.rs`: one test that, for every benchmark, runs it through `anx run` (spawned via `assert_cmd`) *and* builds + directly executes the resulting binary (via `anx build` then `std::process::Command` on the output path, same pattern as `tests/cli.rs`'s standalone-binary check), diffing both against the paired `.expected` file. Collects every mismatch before failing (rather than stopping at the first) so a regression run shows the full picture in one go.
 - **All 20 programs pass on both the interpreter and the compiled path** — this is simultaneously Phase 7's exit gate and the PRD's actual leading success metric ("% of the 20-problem benchmark suite that compiles and runs correctly — target 100% on the P0 feature set before calling v1 done"). **This completes the entire P0 milestone** (PRD Goal 1); only Phase 8 (Dogfooding — a usage phase, not further coding) remains before v1 is done.
 - **Exit gate** ("100% of the 20 programs pass on both the interpreter and the compiled path"): met.
-- Not yet committed.
+- Commit: `137141a` (pushed to `origin/main`).
 
-### Phase 8 — Dogfooding ⬜
-Not started. 0/10 real DSA problems solved in ANX.
+### Phase 8 — Dogfooding 🟡
+- **This phase is fundamentally different from 0–7: it's a usage phase, not a coding phase.** The exit gate ("10 problems solved without falling back to Java") is about Ayushman's own real DSA practice, not something achievable by writing more compiler code — I can't autonomously satisfy it, only support it.
+- Set up `docs/ANX-Dogfooding-Notes.md`: a running log of problems solved and friction points hit, per the plan's requirement to capture friction "somewhere durable" as the primary input for what P1 actually needs (beyond the PRD's current P1 wishlist).
+- Solved 1 problem as a first entry to prove the whole workflow end-to-end on a problem *outside* the fixed benchmark suite — see the notes file for which problem, the friction hit, and the fix made as a result.
+- **0/10 solved by Ayushman** — the real count only moves as actual practice happens.
 
 ---
 
@@ -120,4 +123,5 @@ Not started. 0/10 real DSA problems solved in ANX.
 - **2026-07-08** — Phase 4 (Tree-Walking Interpreter) complete; all 20 benchmarks produce hand-verified correct output. Also fixed a sema bug (`arr.length` wrongly accepted as an assignment target) found while designing this phase. Commit `dc1180b`, pushed.
 - **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Commit `7293657`, pushed.
 - **2026-07-08** — Phase 6 (Compile Pipeline & CLI) complete. `anx check|run|build` all working with matching exit codes (0/1/2); `anx build` links a C runtime shim compiled fresh each run, and now also emits the array-bounds/div-zero/negative-size runtime guards Phase 5 deferred, so the compiled path fails identically to the interpreter. All 20 benchmarks manually verified to match between interpreter and compiled binary. Commit `0252e9a`, pushed.
-- **2026-07-08** — Phase 7 (Benchmark Suite) complete: formalized the already-verified 20 programs into `.expected` fixtures + `tests/integration.rs`. All 20 pass on both interpreter and compiled path — **this is the PRD's leading success metric and completes the entire P0 milestone.** Only Phase 8 (Dogfooding) remains. Not yet committed.
+- **2026-07-08** — Phase 7 (Benchmark Suite) complete: formalized the already-verified 20 programs into `.expected` fixtures + `tests/integration.rs`. All 20 pass on both interpreter and compiled path — **this is the PRD's leading success metric and completes the entire P0 milestone.** Only Phase 8 (Dogfooding) remains. Commit `137141a`, pushed.
+- **2026-07-08** — Phase 8 (Dogfooding) started: created `docs/ANX-Dogfooding-Notes-v1.md` and `dogfood/` for problems outside the fixed benchmark suite. Seeded it by solving N-Queens (n=8, counts 92 solutions) — matched on both paths, no friction hit. 1/10; the other 9 are Ayushman's own real placement-prep practice, not something this session can complete. Not yet committed.
