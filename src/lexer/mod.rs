@@ -223,11 +223,52 @@ impl<'a> Lexer<'a> {
     fn lex_operator_or_punct(&mut self, line: usize, col: usize) -> Result<TokenKind, LexError> {
         let c = self.advance().unwrap();
         let kind = match c {
-            '+' => TokenKind::Plus,
-            '-' => TokenKind::Minus,
-            '*' => TokenKind::Star,
-            '/' => TokenKind::Slash,
-            '%' => TokenKind::Percent,
+            '+' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::PlusEq
+                } else if self.peek_is('+') {
+                    self.advance();
+                    TokenKind::PlusPlus
+                } else {
+                    TokenKind::Plus
+                }
+            }
+            '-' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::MinusEq
+                } else if self.peek_is('-') {
+                    self.advance();
+                    TokenKind::MinusMinus
+                } else {
+                    TokenKind::Minus
+                }
+            }
+            '*' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::StarEq
+                } else {
+                    TokenKind::Star
+                }
+            }
+            '/' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::SlashEq
+                } else {
+                    TokenKind::Slash
+                }
+            }
+            '%' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
+            }
             '=' => {
                 if self.peek_is('=') {
                     self.advance();
@@ -245,7 +286,16 @@ impl<'a> Lexer<'a> {
                 }
             }
             '<' => {
-                if self.peek_is('=') {
+                if self.peek_is('<') {
+                    if self.peek_next() == Some('=') {
+                        self.advance();
+                        self.advance();
+                        TokenKind::ShlEq
+                    } else {
+                        self.advance();
+                        TokenKind::Shl
+                    }
+                } else if self.peek_is('=') {
                     self.advance();
                     TokenKind::LtEq
                 } else {
@@ -253,21 +303,64 @@ impl<'a> Lexer<'a> {
                 }
             }
             '>' => {
-                if self.peek_is('=') {
+                if self.peek_is('>') {
+                    if self.peek_next() == Some('>') {
+                        self.advance(); // consume 2nd '>'
+                        self.advance(); // consume 3rd '>'
+                        if self.peek_is('=') {
+                            self.advance();
+                            TokenKind::UShrEq
+                        } else {
+                            TokenKind::UShr
+                        }
+                    } else if self.peek_next() == Some('=') {
+                        self.advance();
+                        self.advance();
+                        TokenKind::ShrEq
+                    } else {
+                        self.advance();
+                        TokenKind::Shr
+                    }
+                } else if self.peek_is('=') {
                     self.advance();
                     TokenKind::GtEq
                 } else {
                     TokenKind::Gt
                 }
             }
-            '&' if self.peek_is('&') => {
-                self.advance();
-                TokenKind::AndAnd
+            '&' => {
+                if self.peek_is('&') {
+                    self.advance();
+                    TokenKind::AndAnd
+                } else if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::AmpEq
+                } else {
+                    TokenKind::Amp
+                }
             }
-            '|' if self.peek_is('|') => {
-                self.advance();
-                TokenKind::OrOr
+            '|' => {
+                if self.peek_is('|') {
+                    self.advance();
+                    TokenKind::OrOr
+                } else if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::PipeEq
+                } else {
+                    TokenKind::Pipe
+                }
             }
+            '^' => {
+                if self.peek_is('=') {
+                    self.advance();
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
+            }
+            '~' => TokenKind::Tilde,
+            '?' => TokenKind::Question,
+            ':' => TokenKind::Colon,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
@@ -394,6 +487,153 @@ mod tests {
                 TokenKind::Bang,
                 TokenKind::Eq,
                 TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_bitwise_and_shift_operators() {
+        assert_eq!(
+            kinds("& | ^ ~ << >>"),
+            vec![
+                TokenKind::Amp,
+                TokenKind::Pipe,
+                TokenKind::Caret,
+                TokenKind::Tilde,
+                TokenKind::Shl,
+                TokenKind::Shr,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_ternary_operator() {
+        assert_eq!(
+            kinds("? :"),
+            vec![TokenKind::Question, TokenKind::Colon, TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn lexes_compound_assignment_operators() {
+        assert_eq!(
+            kinds("+= -= *= /= %= &= |= ^= <<= >>="),
+            vec![
+                TokenKind::PlusEq,
+                TokenKind::MinusEq,
+                TokenKind::StarEq,
+                TokenKind::SlashEq,
+                TokenKind::PercentEq,
+                TokenKind::AmpEq,
+                TokenKind::PipeEq,
+                TokenKind::CaretEq,
+                TokenKind::ShlEq,
+                TokenKind::ShrEq,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_unsigned_shift_and_increment_decrement() {
+        assert_eq!(
+            kinds(">>> >>>= ++ --"),
+            vec![
+                TokenKind::UShr,
+                TokenKind::UShrEq,
+                TokenKind::PlusPlus,
+                TokenKind::MinusMinus,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn distinguishes_ushr_from_shr_and_shr_eq() {
+        assert_eq!(kinds("a >> b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::Shr,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+        assert_eq!(kinds("a >>= b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::ShrEq,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+        assert_eq!(kinds("a >>> b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::UShr,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+        assert_eq!(kinds("a >>>= b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::UShrEq,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+    }
+
+    #[test]
+    fn distinguishes_increment_from_plus_and_plus_eq() {
+        assert_eq!(kinds("a + b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::Plus,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+        assert_eq!(kinds("a += b"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::PlusEq,
+            TokenKind::Identifier("b".to_string()),
+            TokenKind::Eof,
+        ]);
+        assert_eq!(kinds("a++"), vec![
+            TokenKind::Identifier("a".to_string()),
+            TokenKind::PlusPlus,
+            TokenKind::Eof,
+        ]);
+    }
+
+    #[test]
+    fn distinguishes_shift_from_comparison_and_shift_assign() {
+        assert_eq!(
+            kinds("a < b"),
+            vec![
+                TokenKind::Identifier("a".to_string()),
+                TokenKind::Lt,
+                TokenKind::Identifier("b".to_string()),
+                TokenKind::Eof
+            ]
+        );
+        assert_eq!(
+            kinds("a << b"),
+            vec![
+                TokenKind::Identifier("a".to_string()),
+                TokenKind::Shl,
+                TokenKind::Identifier("b".to_string()),
+                TokenKind::Eof
+            ]
+        );
+        assert_eq!(
+            kinds("a <<= b"),
+            vec![
+                TokenKind::Identifier("a".to_string()),
+                TokenKind::ShlEq,
+                TokenKind::Identifier("b".to_string()),
+                TokenKind::Eof
+            ]
+        );
+        assert_eq!(
+            kinds("a <= b"),
+            vec![
+                TokenKind::Identifier("a".to_string()),
+                TokenKind::LtEq,
+                TokenKind::Identifier("b".to_string()),
+                TokenKind::Eof
             ]
         );
     }

@@ -483,6 +483,15 @@ impl<'ctx> Codegen<'ctx> {
             Expr::Binary { op, left, right, .. } => self.codegen_binary(*op, left, right, scopes),
             Expr::Unary { op, operand, .. } => self.codegen_unary(*op, operand, scopes),
             Expr::Assign { target, value, .. } => self.codegen_assign(target, value, scopes),
+            Expr::CompoundAssign { op, target, value, .. } => {
+                self.codegen_compound_assign(*op, target, value, scopes)
+            }
+            Expr::IncDec { op, target, is_prefix, .. } => {
+                self.codegen_inc_dec(*op, target, *is_prefix, scopes)
+            }
+            Expr::Ternary { cond, then_branch, else_branch, .. } => {
+                self.codegen_ternary(expr.id(), cond, then_branch, else_branch, scopes)
+            }
             Expr::Call { callee, args, .. } => self.codegen_call(callee, args, scopes),
             Expr::Index { array, index, .. } => {
                 let ptr = self.codegen_index_ptr(array, index, scopes);
@@ -519,99 +528,116 @@ impl<'ctx> Codegen<'ctx> {
         let r = self.codegen_expr(right, scopes).unwrap();
 
         let result: BasicValueEnum = if l.is_int_value() {
-            let (l, r) = (l.into_int_value(), r.into_int_value());
-            match op {
-                BinOp::Add => self.builder.build_int_add(l, r, "addtmp").unwrap().into(),
-                BinOp::Sub => self.builder.build_int_sub(l, r, "subtmp").unwrap().into(),
-                BinOp::Mul => self.builder.build_int_mul(l, r, "multmp").unwrap().into(),
-                BinOp::Div => {
-                    self.emit_div_zero_guard(r);
-                    self.builder
-                        .build_int_signed_div(l, r, "divtmp")
-                        .unwrap()
-                        .into()
-                }
-                BinOp::Mod => {
-                    self.emit_div_zero_guard(r);
-                    self.builder
-                        .build_int_signed_rem(l, r, "modtmp")
-                        .unwrap()
-                        .into()
-                }
-                BinOp::Lt => self
-                    .builder
-                    .build_int_compare(IntPredicate::SLT, l, r, "lttmp")
-                    .unwrap()
-                    .into(),
-                BinOp::LtEq => self
-                    .builder
-                    .build_int_compare(IntPredicate::SLE, l, r, "letmp")
-                    .unwrap()
-                    .into(),
-                BinOp::Gt => self
-                    .builder
-                    .build_int_compare(IntPredicate::SGT, l, r, "gttmp")
-                    .unwrap()
-                    .into(),
-                BinOp::GtEq => self
-                    .builder
-                    .build_int_compare(IntPredicate::SGE, l, r, "getmp")
-                    .unwrap()
-                    .into(),
-                BinOp::Eq => self
-                    .builder
-                    .build_int_compare(IntPredicate::EQ, l, r, "eqtmp")
-                    .unwrap()
-                    .into(),
-                BinOp::NotEq => self
-                    .builder
-                    .build_int_compare(IntPredicate::NE, l, r, "netmp")
-                    .unwrap()
-                    .into(),
-                BinOp::And | BinOp::Or => unreachable!("handled above"),
-            }
+            self.apply_int_binop(op, l.into_int_value(), r.into_int_value()).into()
         } else {
-            let (l, r) = (l.into_float_value(), r.into_float_value());
-            match op {
-                BinOp::Add => self.builder.build_float_add(l, r, "addtmp").unwrap().into(),
-                BinOp::Sub => self.builder.build_float_sub(l, r, "subtmp").unwrap().into(),
-                BinOp::Mul => self.builder.build_float_mul(l, r, "multmp").unwrap().into(),
-                BinOp::Div => self.builder.build_float_div(l, r, "divtmp").unwrap().into(),
-                BinOp::Mod => self.builder.build_float_rem(l, r, "modtmp").unwrap().into(),
-                BinOp::Lt => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::OLT, l, r, "lttmp")
-                    .unwrap()
-                    .into(),
-                BinOp::LtEq => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::OLE, l, r, "letmp")
-                    .unwrap()
-                    .into(),
-                BinOp::Gt => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::OGT, l, r, "gttmp")
-                    .unwrap()
-                    .into(),
-                BinOp::GtEq => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::OGE, l, r, "getmp")
-                    .unwrap()
-                    .into(),
-                BinOp::Eq => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::OEQ, l, r, "eqtmp")
-                    .unwrap()
-                    .into(),
-                BinOp::NotEq => self
-                    .builder
-                    .build_float_compare(inkwell::FloatPredicate::ONE, l, r, "netmp")
-                    .unwrap()
-                    .into(),
-                BinOp::And | BinOp::Or => unreachable!("handled above"),
-            }
+            self.apply_float_binop(op, l.into_float_value(), r.into_float_value())
         };
         Some(result)
+    }
+
+    /// The int-operand op logic, shared by `codegen_binary` (both operands
+    /// freshly codegen'd) and `codegen_compound_assign` (target's loaded
+    /// current value + the RHS) — mirrors the interpreter's
+    /// `apply_binary_op` split for the same reason (see its doc comment).
+    fn apply_int_binop(&mut self, op: BinOp, l: IntValue<'ctx>, r: IntValue<'ctx>) -> IntValue<'ctx> {
+        match op {
+            BinOp::Add => self.builder.build_int_add(l, r, "addtmp").unwrap(),
+            BinOp::Sub => self.builder.build_int_sub(l, r, "subtmp").unwrap(),
+            BinOp::Mul => self.builder.build_int_mul(l, r, "multmp").unwrap(),
+            BinOp::Div => {
+                self.emit_div_zero_guard(r);
+                self.builder.build_int_signed_div(l, r, "divtmp").unwrap()
+            }
+            BinOp::Mod => {
+                self.emit_div_zero_guard(r);
+                self.builder.build_int_signed_rem(l, r, "modtmp").unwrap()
+            }
+            BinOp::BitAnd => self.builder.build_and(l, r, "andtmp").unwrap(),
+            BinOp::BitOr => self.builder.build_or(l, r, "ortmp").unwrap(),
+            BinOp::BitXor => self.builder.build_xor(l, r, "xortmp").unwrap(),
+            BinOp::Shl => self.builder.build_left_shift(l, r, "shltmp").unwrap(),
+            // `true` = arithmetic (sign-extending) shift — the Operators
+            // Plan's decision, since ANX's only integer type is signed.
+            BinOp::Shr => self.builder.build_right_shift(l, r, true, "shrtmp").unwrap(),
+            // `false` = logical (zero-filling) rather than arithmetic —
+            // the LLVM builder call already supported this mode, just
+            // wasn't exposed as a second ANX operator until now.
+            BinOp::UShr => self.builder.build_right_shift(l, r, false, "ushrtmp").unwrap(),
+            BinOp::Lt => self
+                .builder
+                .build_int_compare(IntPredicate::SLT, l, r, "lttmp")
+                .unwrap(),
+            BinOp::LtEq => self
+                .builder
+                .build_int_compare(IntPredicate::SLE, l, r, "letmp")
+                .unwrap(),
+            BinOp::Gt => self
+                .builder
+                .build_int_compare(IntPredicate::SGT, l, r, "gttmp")
+                .unwrap(),
+            BinOp::GtEq => self
+                .builder
+                .build_int_compare(IntPredicate::SGE, l, r, "getmp")
+                .unwrap(),
+            BinOp::Eq => self
+                .builder
+                .build_int_compare(IntPredicate::EQ, l, r, "eqtmp")
+                .unwrap(),
+            BinOp::NotEq => self
+                .builder
+                .build_int_compare(IntPredicate::NE, l, r, "netmp")
+                .unwrap(),
+            BinOp::And | BinOp::Or => unreachable!("handled by codegen_short_circuit"),
+        }
+    }
+
+    fn apply_float_binop(
+        &mut self,
+        op: BinOp,
+        l: inkwell::values::FloatValue<'ctx>,
+        r: inkwell::values::FloatValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        match op {
+            BinOp::Add => self.builder.build_float_add(l, r, "addtmp").unwrap().into(),
+            BinOp::Sub => self.builder.build_float_sub(l, r, "subtmp").unwrap().into(),
+            BinOp::Mul => self.builder.build_float_mul(l, r, "multmp").unwrap().into(),
+            BinOp::Div => self.builder.build_float_div(l, r, "divtmp").unwrap().into(),
+            BinOp::Mod => self.builder.build_float_rem(l, r, "modtmp").unwrap().into(),
+            BinOp::Lt => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OLT, l, r, "lttmp")
+                .unwrap()
+                .into(),
+            BinOp::LtEq => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OLE, l, r, "letmp")
+                .unwrap()
+                .into(),
+            BinOp::Gt => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OGT, l, r, "gttmp")
+                .unwrap()
+                .into(),
+            BinOp::GtEq => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OGE, l, r, "getmp")
+                .unwrap()
+                .into(),
+            BinOp::Eq => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::OEQ, l, r, "eqtmp")
+                .unwrap()
+                .into(),
+            BinOp::NotEq => self
+                .builder
+                .build_float_compare(inkwell::FloatPredicate::ONE, l, r, "netmp")
+                .unwrap()
+                .into(),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::UShr => {
+                unreachable!("sema guarantees bitwise/shift operands are int, never float")
+            }
+            BinOp::And | BinOp::Or => unreachable!("handled by codegen_short_circuit"),
+        }
     }
 
     /// Int `/` and `%` by zero are UB at the LLVM level (and don't even trap
@@ -676,6 +702,81 @@ impl<'ctx> Codegen<'ctx> {
         phi.as_basic_value().into_int_value()
     }
 
+    /// `cond ? then : else` as an expression — same basic-block-plus-`phi`
+    /// shape as `codegen_short_circuit` above, generalized to any result
+    /// type instead of always `bool`. Only the taken branch's side effects
+    /// happen, same as the interpreter's short-circuiting evaluation.
+    /// `Type::Void` can't reach here — sema's `check_ternary` rejects it,
+    /// since there's no such thing as a void-typed `phi`.
+    fn codegen_ternary(
+        &mut self,
+        result_id: NodeId,
+        cond: &Expr,
+        then_branch: &Expr,
+        else_branch: &Expr,
+        scopes: &mut Scopes<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let then_bb = self.context.append_basic_block(function, "terntrue");
+        let else_bb = self.context.append_basic_block(function, "ternfalse");
+        let merge_bb = self.context.append_basic_block(function, "ternmerge");
+
+        let cond_val = self.codegen_expr(cond, scopes).unwrap().into_int_value();
+        self.builder
+            .build_conditional_branch(cond_val, then_bb, else_bb)
+            .unwrap();
+
+        self.builder.position_at_end(then_bb);
+        let then_val = self.codegen_expr(then_branch, scopes).unwrap();
+        let then_end_bb = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+        self.builder.position_at_end(else_bb);
+        let else_val = self.codegen_expr(else_branch, scopes).unwrap();
+        let else_end_bb = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(merge_bb).unwrap();
+
+        self.builder.position_at_end(merge_bb);
+        let result_ty = self.resolved_type(result_id).clone();
+        let phi = self
+            .builder
+            .build_phi(self.llvm_basic_type(&result_ty), "ternresult")
+            .unwrap();
+        // BasicValueEnum doesn't itself implement the BasicValue trait
+        // add_incoming needs — dispatch to the concrete variant per the
+        // ternary's resolved type (matches the `.into_*_value()` pattern
+        // used everywhere else in this file).
+        match result_ty {
+            Type::Int | Type::Bool => {
+                let t = then_val.into_int_value();
+                let e = else_val.into_int_value();
+                phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
+            }
+            Type::Float => {
+                let t = then_val.into_float_value();
+                let e = else_val.into_float_value();
+                phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
+            }
+            Type::Str => {
+                let t = then_val.into_pointer_value();
+                let e = else_val.into_pointer_value();
+                phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
+            }
+            Type::Array(_) => {
+                let t = then_val.into_struct_value();
+                let e = else_val.into_struct_value();
+                phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
+            }
+            Type::Void => unreachable!("sema rejects void-typed ternary branches"),
+        }
+        Some(phi.as_basic_value())
+    }
+
     fn codegen_unary(
         &mut self,
         op: UnOp,
@@ -700,6 +801,13 @@ impl<'ctx> Codegen<'ctx> {
             UnOp::Not => self
                 .builder
                 .build_not(v.into_int_value(), "nottmp")
+                .unwrap()
+                .into(),
+            // Same LLVM `not` instruction as logical NOT — bitwise complement
+            // on an i64 is exactly XOR-with-all-ones at the IR level.
+            UnOp::BitNot => self
+                .builder
+                .build_not(v.into_int_value(), "bitnottmp")
                 .unwrap()
                 .into(),
         };
@@ -727,6 +835,88 @@ impl<'ctx> Codegen<'ctx> {
             _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
         }
         Some(val)
+    }
+
+    /// Computes the target's pointer exactly once (a `resolve_var` lookup
+    /// or a single `codegen_index_ptr` GEP), loads through it, applies `op`,
+    /// stores back through the same pointer. Mirrors the interpreter's
+    /// `eval_compound_assign` for the same double-evaluation reason.
+    fn codegen_compound_assign(
+        &mut self,
+        op: BinOp,
+        target: &Expr,
+        value: &Expr,
+        scopes: &mut Scopes<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let (ptr, elem_llvm_ty) = match target {
+            Expr::Ident { name, .. } => {
+                let ptr = self.resolve_var(scopes, name);
+                let ty = self.llvm_basic_type(self.resolved_type(target.id()));
+                (ptr, ty)
+            }
+            Expr::Index { array, index, .. } => {
+                let ptr = self.codegen_index_ptr(array, index, scopes);
+                let ty = self.array_elem_llvm_type(array);
+                (ptr, ty)
+            }
+            _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
+        };
+        let current = self.builder.build_load(elem_llvm_ty, ptr, "curval").unwrap();
+        let rhs = self
+            .codegen_expr(value, scopes)
+            .expect("sema guarantees a non-void compound-assignment value");
+        let new_val: BasicValueEnum = if current.is_int_value() {
+            self.apply_int_binop(op, current.into_int_value(), rhs.into_int_value())
+                .into()
+        } else {
+            self.apply_float_binop(op, current.into_float_value(), rhs.into_float_value())
+        };
+        self.builder.build_store(ptr, new_val).unwrap();
+        Some(new_val)
+    }
+
+    /// Same "resolve the target's pointer exactly once" shape as
+    /// `codegen_compound_assign` above. Prefix returns the new value;
+    /// postfix returns the value that was loaded *before* the change —
+    /// the one real difference from compound assignment.
+    fn codegen_inc_dec(
+        &mut self,
+        op: IncDecOp,
+        target: &Expr,
+        is_prefix: bool,
+        scopes: &mut Scopes<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let (ptr, elem_llvm_ty) = match target {
+            Expr::Ident { name, .. } => {
+                let ptr = self.resolve_var(scopes, name);
+                let ty = self.llvm_basic_type(self.resolved_type(target.id()));
+                (ptr, ty)
+            }
+            Expr::Index { array, index, .. } => {
+                let ptr = self.codegen_index_ptr(array, index, scopes);
+                let ty = self.array_elem_llvm_type(array);
+                (ptr, ty)
+            }
+            _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
+        };
+        let current = self.builder.build_load(elem_llvm_ty, ptr, "curval").unwrap();
+        let new_val: BasicValueEnum = if current.is_int_value() {
+            let c = current.into_int_value();
+            let one = c.get_type().const_int(1, false);
+            match op {
+                IncDecOp::Inc => self.builder.build_int_add(c, one, "inctmp").unwrap().into(),
+                IncDecOp::Dec => self.builder.build_int_sub(c, one, "dectmp").unwrap().into(),
+            }
+        } else {
+            let c = current.into_float_value();
+            let one = c.get_type().const_float(1.0);
+            match op {
+                IncDecOp::Inc => self.builder.build_float_add(c, one, "inctmp").unwrap().into(),
+                IncDecOp::Dec => self.builder.build_float_sub(c, one, "dectmp").unwrap().into(),
+            }
+        };
+        self.builder.build_store(ptr, new_val).unwrap();
+        Some(if is_prefix { new_val } else { current })
     }
 
     fn codegen_call(
@@ -1394,6 +1584,259 @@ mod tests {
             }
             "#,
         );
+    }
+
+    // ---- P1 Phase 9 (Operators) ----
+
+    #[test]
+    fn compiles_ternary_expression() {
+        assert_verifies(
+            r#"
+            void main() {
+                int a = 5;
+                int b = 3;
+                int m = a > b ? a : b;
+                print(m);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn jit_ternary_is_correct() {
+        let source = r#"
+            int maxOf(int a, int b) {
+                return a > b ? a : b;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_2(source, "maxOf", 5, 3), 5);
+        assert_eq!(jit_i64_2(source, "maxOf", 3, 5), 5);
+    }
+
+    #[test]
+    fn compiles_bitwise_and_shift_operators() {
+        assert_verifies(
+            r#"
+            void main() {
+                int a = 5 & 3;
+                int b = 5 | 2;
+                int c = 5 ^ 1;
+                int d = ~5;
+                int e = 1 << 4;
+                int f = 16 >> 2;
+                print(a);
+                print(b);
+                print(c);
+                print(d);
+                print(e);
+                print(f);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn jit_bitwise_and_shift_are_correct() {
+        let source = r#"
+            int combine(int a, int b) {
+                return ((a & b) | (a ^ b)) << 1;
+            }
+            void main() { }
+        "#;
+        // (5 & 3) | (5 ^ 3) = 1 | 6 = 7; 7 << 1 = 14
+        assert_eq!(jit_i64_2(source, "combine", 5, 3), 14);
+    }
+
+    #[test]
+    fn jit_bitwise_not_is_correct() {
+        let source = r#"
+            int flip(int a) { return ~a; }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_1(source, "flip", 5), -6);
+        assert_eq!(jit_i64_1(source, "flip", 0), -1);
+    }
+
+    #[test]
+    fn compiles_compound_assignment_on_variable_and_array_index() {
+        assert_verifies(
+            r#"
+            void main() {
+                int x = 1;
+                x += 2;
+                x -= 1;
+                x *= 3;
+                x /= 2;
+                x %= 2;
+                x &= 3;
+                x |= 4;
+                x ^= 1;
+                x <<= 2;
+                x >>= 1;
+                int[] arr = [1, 2, 3];
+                arr[0] += 10;
+                print(x);
+                print(arr[0]);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn jit_compound_assignment_is_correct() {
+        let source = r#"
+            int accumulate(int n) {
+                int total = 0;
+                int i = 0;
+                while (i < n) {
+                    total += i;
+                    i += 1;
+                }
+                return total;
+            }
+            void main() { }
+        "#;
+        // sum of 0..4 = 0+1+2+3 = 6
+        assert_eq!(jit_i64_1(source, "accumulate", 4), 6);
+    }
+
+    #[test]
+    fn jit_compound_assign_on_array_index_evaluates_index_once() {
+        // Same double-evaluation hazard as the interpreter test, checked at
+        // the compiled-code level: nextIndex() must be called exactly once
+        // even though arr[nextIndex()] += 5 reads-and-writes the slot. Uses
+        // an array as the call counter (not a global — codegen currently has
+        // no support for top-level `Decl::Var` at all, a separate pre-
+        // existing gap unrelated to this operators work; see the P1
+        // Progress tracker).
+        let source = r#"
+            int nextIndex(int[] counter) {
+                counter[0] += 1;
+                return 0;
+            }
+            int run() {
+                int[] arr = [10];
+                int[] counter = [0];
+                arr[nextIndex(counter)] += 5;
+                return arr[0] * 100 + counter[0];
+            }
+            void main() { }
+        "#;
+        // arr[0] becomes 15, counter[0] becomes 1 -> 15*100 + 1 = 1501
+        assert_eq!(jit_i64_0(source, "run"), 1501);
+    }
+
+    #[test]
+    fn compiles_unsigned_right_shift() {
+        assert_verifies(
+            r#"
+            void main() {
+                int x = -1 >>> 1;
+                print(x);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn jit_unsigned_right_shift_is_correct() {
+        let source = r#"
+            int ushr(int a, int b) { return a >>> b; }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_2(source, "ushr", -1, 1), i64::MAX);
+        assert_eq!(jit_i64_2(source, "ushr", -1, 0), -1);
+    }
+
+    #[test]
+    fn compiles_prefix_and_postfix_increment_decrement() {
+        assert_verifies(
+            r#"
+            void main() {
+                int x = 5;
+                int a = ++x;
+                int b = x++;
+                int c = --x;
+                int d = x--;
+                print(a);
+                print(b);
+                print(c);
+                print(d);
+                int[] arr = [1, 2, 3];
+                arr[0]++;
+                ++arr[1];
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn jit_prefix_increment_returns_new_value() {
+        let source = r#"
+            int preInc(int x) { return ++x; }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_1(source, "preInc", 5), 6);
+    }
+
+    #[test]
+    fn jit_postfix_increment_returns_old_value() {
+        let source = r#"
+            int postInc(int x) { return x++; }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_1(source, "postInc", 5), 5);
+    }
+
+    #[test]
+    fn jit_postfix_decrement_returns_old_value_and_mutates() {
+        // Confirms the mutation actually happened, not just the return value.
+        let source = r#"
+            int postDecTwice(int x) {
+                int first = x--;
+                int second = x--;
+                return first * 100 + second;
+            }
+            void main() { }
+        "#;
+        // first = 5 (pre-mutation value), x becomes 4; second = 4, x becomes 3
+        assert_eq!(jit_i64_1(source, "postDecTwice", 5), 504);
+    }
+
+    #[test]
+    fn jit_increment_on_array_index_evaluates_index_once() {
+        let source = r#"
+            int nextIndex(int[] counter) {
+                counter[0] += 1;
+                return 0;
+            }
+            int run() {
+                int[] arr = [10];
+                int[] counter = [0];
+                arr[nextIndex(counter)]++;
+                return arr[0] * 100 + counter[0];
+            }
+            void main() { }
+        "#;
+        // arr[0] becomes 11, counter[0] becomes 1 -> 11*100 + 1 = 1101
+        assert_eq!(jit_i64_0(source, "run"), 1101);
+    }
+
+    #[test]
+    fn jit_increment_works_in_for_loop() {
+        let source = r#"
+            int sumTo(int n) {
+                int total = 0;
+                for (int i = 0; i < n; i++) {
+                    total += i;
+                }
+                return total;
+            }
+            void main() { }
+        "#;
+        // 0+1+2+3+4 = 10
+        assert_eq!(jit_i64_1(source, "sumTo", 5), 10);
     }
 
     /// Every P0 benchmark program (docs/ANX-Implementation-Plan-v1.md Phase 7)

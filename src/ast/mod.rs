@@ -111,12 +111,27 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    /// `>>>` — unsigned/logical right shift (zero-fills the vacated bits
+    /// instead of sign-extending, unlike `Shr`).
+    UShr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
     Neg,
     Not,
+    BitNot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IncDecOp {
+    Inc,
+    Dec,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +184,36 @@ pub enum Expr {
         value: Box<Expr>,
         line: usize,
     },
+    /// `target op= value` (e.g. `x += 1`) — a distinct node rather than
+    /// parser-level sugar for `target = target op value`, so the target's
+    /// "slot" (variable, or array+index) is only evaluated once. See
+    /// docs/P1/ANX-P1-Operators-Plan-v1.md §1.
+    CompoundAssign {
+        id: NodeId,
+        op: BinOp,
+        target: Box<Expr>,
+        value: Box<Expr>,
+        line: usize,
+    },
+    /// `++x`/`--x` (prefix, evaluates to the new value) or `x++`/`x--`
+    /// (postfix, evaluates to the value *before* the change) — distinct
+    /// from `CompoundAssign` since the two forms return different values,
+    /// but shares the same "evaluate the target's slot exactly once"
+    /// concern for `Index` targets.
+    IncDec {
+        id: NodeId,
+        op: IncDecOp,
+        target: Box<Expr>,
+        is_prefix: bool,
+        line: usize,
+    },
+    Ternary {
+        id: NodeId,
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+        line: usize,
+    },
     Call {
         id: NodeId,
         callee: String,
@@ -212,6 +257,9 @@ impl Expr {
             | Expr::Binary { id, .. }
             | Expr::Unary { id, .. }
             | Expr::Assign { id, .. }
+            | Expr::CompoundAssign { id, .. }
+            | Expr::IncDec { id, .. }
+            | Expr::Ternary { id, .. }
             | Expr::Call { id, .. }
             | Expr::Index { id, .. }
             | Expr::FieldAccess { id, .. }
@@ -231,6 +279,9 @@ impl Expr {
             | Expr::Binary { line, .. }
             | Expr::Unary { line, .. }
             | Expr::Assign { line, .. }
+            | Expr::CompoundAssign { line, .. }
+            | Expr::IncDec { line, .. }
+            | Expr::Ternary { line, .. }
             | Expr::Call { line, .. }
             | Expr::Index { line, .. }
             | Expr::FieldAccess { line, .. }

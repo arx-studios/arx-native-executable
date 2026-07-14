@@ -43,6 +43,39 @@ pub enum TokenKind {
     Bang,
     Eq,
 
+    // Bitwise / shift (P1 — ANX-P1-Operators-Plan-v1.md)
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    Shl,
+    Shr,
+    /// `>>>` — unsigned/logical right shift (zero-fills instead of
+    /// sign-extending). Added alongside `++`/`--`, after the initial P1
+    /// Operators pass.
+    UShr,
+
+    // Ternary (P1)
+    Question,
+    Colon,
+
+    // Compound assignment (P1)
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
+    UShrEq,
+
+    // Increment/decrement
+    PlusPlus,
+    MinusMinus,
+
     // Punctuation
     LParen,
     RParen,

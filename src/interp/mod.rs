@@ -226,6 +226,19 @@ impl<'a> Interpreter<'a> {
             Expr::Binary { op, left, right, .. } => self.eval_binary(*op, left, right, env),
             Expr::Unary { op, operand, .. } => self.eval_unary(*op, operand, env),
             Expr::Assign { target, value, .. } => self.eval_assign(target, value, env),
+            Expr::CompoundAssign { op, target, value, .. } => {
+                self.eval_compound_assign(*op, target, value, env)
+            }
+            Expr::IncDec { op, target, is_prefix, .. } => {
+                self.eval_inc_dec(*op, target, *is_prefix, env)
+            }
+            Expr::Ternary { cond, then_branch, else_branch, .. } => {
+                if as_bool(&self.eval_expr(cond, env)?) {
+                    self.eval_expr(then_branch, env)
+                } else {
+                    self.eval_expr(else_branch, env)
+                }
+            }
             Expr::Call { callee, args, .. } => self.eval_call(callee, args, env),
             Expr::Index { array, index, .. } => self.eval_index(array, index, env),
             Expr::FieldAccess { object, field, .. } => self.eval_field_access(object, field, env),
@@ -276,6 +289,16 @@ impl<'a> Interpreter<'a> {
 
         let l = self.eval_expr(left, env)?;
         let r = self.eval_expr(right, env)?;
+        self.apply_binary_op(op, l, r)
+    }
+
+    /// The op-specific value computation, shared by `eval_binary` (once
+    /// both operands are freshly evaluated) and `eval_compound_assign`
+    /// (target's current value + the RHS). Never called with `And`/`Or` —
+    /// those short-circuit in `eval_binary` before reaching here, and the
+    /// parser never produces a `CompoundAssign` with those ops (no `&&=`/
+    /// `||=` in the grammar).
+    fn apply_binary_op(&self, op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         match op {
             BinOp::Add => Ok(numeric_op(l, r, |a, b| a + b, |a, b| a + b)),
             BinOp::Sub => Ok(numeric_op(l, r, |a, b| a - b, |a, b| a - b)),
@@ -301,6 +324,39 @@ impl<'a> Interpreter<'a> {
                 }
                 _ => unreachable!("sema guarantees int operands for %"),
             },
+            BinOp::BitAnd => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a & b)),
+                _ => unreachable!("sema guarantees int operands for &"),
+            },
+            BinOp::BitOr => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a | b)),
+                _ => unreachable!("sema guarantees int operands for |"),
+            },
+            BinOp::BitXor => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a ^ b)),
+                _ => unreachable!("sema guarantees int operands for ^"),
+            },
+            // wrapping_sh{l,r} (not `<<`/`>>`) deliberately avoid a Rust-level
+            // panic on out-of-range shift amounts — matches the plan's "not
+            // range-checked, same as LLVM" stance without crashing the
+            // interpreter process to get there.
+            BinOp::Shl => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_shl(b as u32))),
+                _ => unreachable!("sema guarantees int operands for <<"),
+            },
+            BinOp::Shr => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_shr(b as u32))),
+                _ => unreachable!("sema guarantees int operands for >>"),
+            },
+            // Logical (zero-filling) right shift: reinterpret as unsigned
+            // before shifting, so the vacated high bits are 0 instead of a
+            // sign-extended 1 — the only way `>>>` differs from `>>`.
+            BinOp::UShr => match (l, r) {
+                (Value::Int(a), Value::Int(b)) => {
+                    Ok(Value::Int((a as u64).wrapping_shr(b as u32) as i64))
+                }
+                _ => unreachable!("sema guarantees int operands for >>>"),
+            },
             BinOp::Lt => Ok(Value::Bool(numeric_cmp(&l, &r) == std::cmp::Ordering::Less)),
             BinOp::LtEq => Ok(Value::Bool(
                 numeric_cmp(&l, &r) != std::cmp::Ordering::Greater,
@@ -311,7 +367,7 @@ impl<'a> Interpreter<'a> {
             BinOp::GtEq => Ok(Value::Bool(numeric_cmp(&l, &r) != std::cmp::Ordering::Less)),
             BinOp::Eq => Ok(Value::Bool(l == r)),
             BinOp::NotEq => Ok(Value::Bool(l != r)),
-            BinOp::And | BinOp::Or => unreachable!("handled above"),
+            BinOp::And | BinOp::Or => unreachable!("handled by eval_binary before this point"),
         }
     }
 
@@ -326,6 +382,7 @@ impl<'a> Interpreter<'a> {
             (UnOp::Neg, Value::Int(a)) => Ok(Value::Int(-a)),
             (UnOp::Neg, Value::Float(a)) => Ok(Value::Float(-a)),
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+            (UnOp::BitNot, Value::Int(a)) => Ok(Value::Int(!a)),
             _ => unreachable!("sema guarantees a matching operand type for unary ops"),
         }
     }
@@ -361,6 +418,106 @@ impl<'a> Interpreter<'a> {
             _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
         }
         Ok(val)
+    }
+
+    /// Reads the target's current value, evaluates the RHS, combines via
+    /// `op`, and writes back — evaluating the target's array+index (if any)
+    /// exactly once, not twice as a naive `target = target op value`
+    /// desugaring would (see docs/P1/ANX-P1-Operators-Plan-v1.md §1).
+    fn eval_compound_assign(
+        &self,
+        op: BinOp,
+        target: &'a Expr,
+        value: &'a Expr,
+        env: &Rc<Environment>,
+    ) -> Result<Value, RuntimeError> {
+        match target {
+            Expr::Ident { name, .. } => {
+                let current = env.get(name);
+                let rhs = self.eval_expr(value, env)?;
+                let new_val = self.apply_binary_op(op, current, rhs)?;
+                env.set(name, new_val.clone());
+                Ok(new_val)
+            }
+            Expr::Index { array, index, .. } => {
+                let arr_val = self.eval_expr(array, env)?;
+                let idx = as_int(&self.eval_expr(index, env)?);
+                match arr_val {
+                    Value::Array(cells) => {
+                        let current = {
+                            let cells_ref = cells.borrow();
+                            if idx < 0 || idx as usize >= cells_ref.len() {
+                                return Err(RuntimeError::IndexOutOfBounds {
+                                    index: idx,
+                                    length: cells_ref.len(),
+                                });
+                            }
+                            cells_ref[idx as usize].clone()
+                        };
+                        let rhs = self.eval_expr(value, env)?;
+                        let new_val = self.apply_binary_op(op, current, rhs)?;
+                        cells.borrow_mut()[idx as usize] = new_val.clone();
+                        Ok(new_val)
+                    }
+                    _ => unreachable!("sema guarantees an array type for index compound-assignment"),
+                }
+            }
+            _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
+        }
+    }
+
+    fn apply_inc_dec(op: IncDecOp, v: Value) -> Value {
+        match (op, v) {
+            (IncDecOp::Inc, Value::Int(a)) => Value::Int(a + 1),
+            (IncDecOp::Dec, Value::Int(a)) => Value::Int(a - 1),
+            (IncDecOp::Inc, Value::Float(a)) => Value::Float(a + 1.0),
+            (IncDecOp::Dec, Value::Float(a)) => Value::Float(a - 1.0),
+            _ => unreachable!("sema guarantees an int or float operand for ++/--"),
+        }
+    }
+
+    /// Same "resolve the target's slot exactly once" concern as
+    /// `eval_compound_assign` — `arr[f()]++` must call `f()` once. Prefix
+    /// returns the *new* value; postfix returns the value *before* the
+    /// change, which is the one real difference from compound assignment.
+    fn eval_inc_dec(
+        &self,
+        op: IncDecOp,
+        target: &'a Expr,
+        is_prefix: bool,
+        env: &Rc<Environment>,
+    ) -> Result<Value, RuntimeError> {
+        match target {
+            Expr::Ident { name, .. } => {
+                let current = env.get(name);
+                let new_val = Self::apply_inc_dec(op, current.clone());
+                env.set(name, new_val.clone());
+                Ok(if is_prefix { new_val } else { current })
+            }
+            Expr::Index { array, index, .. } => {
+                let arr_val = self.eval_expr(array, env)?;
+                let idx = as_int(&self.eval_expr(index, env)?);
+                match arr_val {
+                    Value::Array(cells) => {
+                        let current = {
+                            let cells_ref = cells.borrow();
+                            if idx < 0 || idx as usize >= cells_ref.len() {
+                                return Err(RuntimeError::IndexOutOfBounds {
+                                    index: idx,
+                                    length: cells_ref.len(),
+                                });
+                            }
+                            cells_ref[idx as usize].clone()
+                        };
+                        let new_val = Self::apply_inc_dec(op, current.clone());
+                        cells.borrow_mut()[idx as usize] = new_val.clone();
+                        Ok(if is_prefix { new_val } else { current })
+                    }
+                    _ => unreachable!("sema guarantees an array type for index increment/decrement"),
+                }
+            }
+            _ => unreachable!("sema guarantees only Ident/Index are valid assignment targets"),
+        }
     }
 
     fn eval_call(
@@ -636,6 +793,208 @@ mod tests {
             "#,
         );
         assert!(matches!(err, RuntimeError::NegativeArraySize { .. }));
+    }
+
+    // ---- P1 Phase 9 (Operators) ----
+
+    #[test]
+    fn evaluates_ternary() {
+        let out = run_captured(
+            r#"
+            void main() {
+                int a = 5;
+                int b = 3;
+                print(a > b ? a : b);
+                print(a > b ? b : a);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["5", "3"]);
+    }
+
+    #[test]
+    fn ternary_only_evaluates_the_taken_branch() {
+        let out = run_captured(
+            r#"
+            int loud(int v) { print("called"); return v; }
+            void main() {
+                int x = true ? 1 : loud(99);
+                print(x);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["1"]);
+    }
+
+    #[test]
+    fn evaluates_bitwise_and_shift_operators() {
+        let out = run_captured(
+            r#"
+            void main() {
+                print(5 & 3);
+                print(5 | 2);
+                print(5 ^ 1);
+                print(~5);
+                print(1 << 4);
+                print(16 >> 2);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["1", "7", "4", "-6", "16", "4"]);
+    }
+
+    #[test]
+    fn evaluates_compound_assignment_on_variable() {
+        let out = run_captured(
+            r#"
+            void main() {
+                int x = 10;
+                x += 5;
+                print(x);
+                x -= 3;
+                print(x);
+                x *= 2;
+                print(x);
+                x /= 4;
+                print(x);
+                x %= 4;
+                print(x);
+                x &= 3;
+                print(x);
+                x |= 8;
+                print(x);
+                x ^= 1;
+                print(x);
+                x <<= 2;
+                print(x);
+                x >>= 1;
+                print(x);
+            }
+            "#,
+        );
+        assert_eq!(
+            out,
+            vec!["15", "12", "24", "6", "2", "2", "10", "11", "44", "22"]
+        );
+    }
+
+    #[test]
+    fn compound_assignment_evaluates_array_index_expression_exactly_once() {
+        // The exact hazard the Operators Plan calls out: naive desugaring
+        // to `arr[f()] = arr[f()] + 1` would call f() twice.
+        let out = run_captured(
+            r#"
+            int calls = 0;
+            int nextIndex() {
+                calls = calls + 1;
+                return 0;
+            }
+            void main() {
+                int[] arr = [10];
+                arr[nextIndex()] += 5;
+                print(arr[0]);
+                print(calls);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["15", "1"]);
+    }
+
+    #[test]
+    fn compound_assignment_returns_the_new_value() {
+        let out = run_captured(
+            r#"
+            void main() {
+                int x = 1;
+                print(x += 4);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["5"]);
+    }
+
+    #[test]
+    fn evaluates_unsigned_right_shift() {
+        // -1 as i64 is all-1-bits; >>> 1 zero-fills the top bit instead of
+        // sign-extending, giving i64::MAX. `>>` on the same input stays -1.
+        let out = run_captured(
+            r#"
+            void main() {
+                int x = -1;
+                print(x >>> 1);
+                print(x >> 1);
+            }
+            "#,
+        );
+        assert_eq!(out, vec![(i64::MAX).to_string(), "-1".to_string()]);
+    }
+
+    #[test]
+    fn evaluates_prefix_increment_and_decrement() {
+        let out = run_captured(
+            r#"
+            void main() {
+                int x = 5;
+                print(++x);
+                print(x);
+                print(--x);
+                print(x);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["6", "6", "5", "5"]);
+    }
+
+    #[test]
+    fn evaluates_postfix_increment_and_decrement() {
+        let out = run_captured(
+            r#"
+            void main() {
+                int x = 5;
+                print(x++);
+                print(x);
+                print(x--);
+                print(x);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["5", "6", "6", "5"]);
+    }
+
+    #[test]
+    fn increment_on_array_index_evaluates_index_once() {
+        // Same double-evaluation hazard as compound assignment.
+        let out = run_captured(
+            r#"
+            int calls = 0;
+            int nextIndex(int[] counter) {
+                counter[0] = counter[0] + 1;
+                return 0;
+            }
+            void main() {
+                int[] arr = [10];
+                int[] counter = [0];
+                arr[nextIndex(counter)]++;
+                print(arr[0]);
+                print(counter[0]);
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["11", "1"]);
+    }
+
+    #[test]
+    fn increment_works_in_for_loop_update() {
+        let out = run_captured(
+            r#"
+            void main() {
+                for (int i = 0; i < 3; i++) {
+                    print(i);
+                }
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["0", "1", "2"]);
     }
 
     /// Every P0 benchmark program (docs/ANX-Implementation-Plan-v1.md Phase 7)

@@ -27,6 +27,13 @@ impl Checker {
             } => self.check_binary(*op, left, right, *line),
             Expr::Unary { op, operand, line, .. } => self.check_unary(*op, operand, *line),
             Expr::Assign { target, value, line, .. } => self.check_assign(target, value, *line),
+            Expr::CompoundAssign { op, target, value, line, .. } => {
+                self.check_compound_assign(*op, target, value, *line)
+            }
+            Expr::IncDec { target, line, .. } => self.check_inc_dec(target, *line),
+            Expr::Ternary { cond, then_branch, else_branch, line, .. } => {
+                self.check_ternary(cond, then_branch, else_branch, *line)
+            }
             Expr::Call { callee, args, line, .. } => self.check_call(callee, args, *line),
             Expr::Index { array, index, line, .. } => self.check_index(array, index, *line),
             Expr::FieldAccess { object, field, line, .. } => {
@@ -96,6 +103,14 @@ impl Checker {
         let lt = self.check_expr(left);
         let rt = self.check_expr(right);
         let (lt, rt) = (lt?, rt?);
+        self.combine_binary_types(op, lt, rt, line)
+    }
+
+    /// The op-specific type rule shared by `check_binary` (both operands
+    /// freshly checked) and `check_compound_assign` (target/value already
+    /// known — see docs/P1/ANX-P1-Operators-Plan-v1.md §1 on why compound
+    /// assignment isn't just parser-level `target = target op value` sugar).
+    fn combine_binary_types(&mut self, op: BinOp, lt: Type, rt: Type, line: usize) -> Option<Type> {
         use BinOp::*;
         match op {
             Add | Sub | Mul | Div | Mod => {
@@ -107,6 +122,18 @@ impl Checker {
                     self.errors.push(SemaError::TypeMismatch {
                         expected: format!("{lt:?}"),
                         found: format!("{rt:?}"),
+                        line,
+                    });
+                    None
+                }
+            }
+            BitAnd | BitOr | BitXor | Shl | Shr | UShr => {
+                if lt == Type::Int && rt == Type::Int {
+                    Some(Type::Int)
+                } else {
+                    self.errors.push(SemaError::TypeMismatch {
+                        expected: "Int".to_string(),
+                        found: format!("{lt:?}/{rt:?}"),
                         line,
                     });
                     None
@@ -152,6 +179,100 @@ impl Checker {
         }
     }
 
+    fn check_compound_assign(
+        &mut self,
+        op: BinOp,
+        target: &Expr,
+        value: &Expr,
+        line: usize,
+    ) -> Option<Type> {
+        if !is_lvalue(target) {
+            self.errors.push(SemaError::InvalidAssignTarget { line });
+            self.check_expr(target);
+            self.check_expr(value);
+            return None;
+        }
+        let target_ty = self.check_expr(target)?;
+        let value_ty = self.check_expr(value)?;
+        let combined = self.combine_binary_types(op, target_ty.clone(), value_ty, line)?;
+        if combined == target_ty {
+            Some(combined)
+        } else {
+            self.errors.push(SemaError::TypeMismatch {
+                expected: format!("{target_ty:?}"),
+                found: format!("{combined:?}"),
+                line,
+            });
+            None
+        }
+    }
+
+    /// Shared by both prefix and postfix `++`/`--` — the static type is the
+    /// same either way (only the *value* returned at runtime differs,
+    /// which is an interp/codegen concern, not a sema one).
+    fn check_inc_dec(&mut self, target: &Expr, line: usize) -> Option<Type> {
+        if !is_lvalue(target) {
+            self.errors.push(SemaError::InvalidAssignTarget { line });
+            self.check_expr(target);
+            return None;
+        }
+        let target_ty = self.check_expr(target)?;
+        if target_ty == Type::Int || target_ty == Type::Float {
+            Some(target_ty)
+        } else {
+            self.errors.push(SemaError::TypeMismatch {
+                expected: "Int or Float".to_string(),
+                found: format!("{target_ty:?}"),
+                line,
+            });
+            None
+        }
+    }
+
+    fn check_ternary(
+        &mut self,
+        cond: &Expr,
+        then_branch: &Expr,
+        else_branch: &Expr,
+        line: usize,
+    ) -> Option<Type> {
+        if let Some(cond_ty) = self.check_expr(cond) {
+            if cond_ty != Type::Bool {
+                self.errors.push(SemaError::NonBoolCondition {
+                    found: format!("{cond_ty:?}"),
+                    line,
+                });
+            }
+        }
+        let then_ty = self.check_expr(then_branch);
+        let else_ty = self.check_expr(else_branch);
+        match (then_ty, else_ty) {
+            // Void can't flow into an LLVM `phi` node (no such thing as a
+            // void-typed value) — and there's no real use case for a
+            // ternary of two void calls anyway (an if/else statement
+            // already does that job). Reject it here rather than let
+            // codegen discover it needs to special-case void.
+            (Some(Type::Void), Some(_)) | (Some(_), Some(Type::Void)) => {
+                self.errors.push(SemaError::TypeMismatch {
+                    expected: "a non-void type in both branches".to_string(),
+                    found: "Void".to_string(),
+                    line,
+                });
+                None
+            }
+            (Some(t), Some(e)) if t == e => Some(t),
+            (Some(t), Some(e)) => {
+                self.errors.push(SemaError::TypeMismatch {
+                    expected: format!("{t:?}"),
+                    found: format!("{e:?}"),
+                    line,
+                });
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn check_unary(&mut self, op: UnOp, operand: &Expr, line: usize) -> Option<Type> {
         let ty = self.check_expr(operand)?;
         match op {
@@ -173,6 +294,18 @@ impl Checker {
                 } else {
                     self.errors.push(SemaError::TypeMismatch {
                         expected: "Bool".to_string(),
+                        found: format!("{ty:?}"),
+                        line,
+                    });
+                    None
+                }
+            }
+            UnOp::BitNot => {
+                if ty == Type::Int {
+                    Some(Type::Int)
+                } else {
+                    self.errors.push(SemaError::TypeMismatch {
+                        expected: "Int".to_string(),
                         found: format!("{ty:?}"),
                         line,
                     });

@@ -309,14 +309,33 @@ impl Parser {
     }
 
     // ---- expressions (precedence-climbing) ----
-    // assignment (right-assoc) < || < && < ==,!= < <,<=,>,>= < +,- < *,/,% < unary !,- < postfix [] () .
+    // assignment (right-assoc) < ternary (right-assoc) < || < && < | < ^ < &
+    // < ==,!= < <,<=,>,>= < <<,>> < +,- < *,/,% < unary !,-,~ < postfix [] () .
+    // See docs/P1/ANX-P1-Operators-Plan-v1.md §2 for the full grammar.
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_assignment()
     }
 
+    fn compound_assign_op(kind: &TokenKind) -> Option<BinOp> {
+        match kind {
+            TokenKind::PlusEq => Some(BinOp::Add),
+            TokenKind::MinusEq => Some(BinOp::Sub),
+            TokenKind::StarEq => Some(BinOp::Mul),
+            TokenKind::SlashEq => Some(BinOp::Div),
+            TokenKind::PercentEq => Some(BinOp::Mod),
+            TokenKind::AmpEq => Some(BinOp::BitAnd),
+            TokenKind::PipeEq => Some(BinOp::BitOr),
+            TokenKind::CaretEq => Some(BinOp::BitXor),
+            TokenKind::ShlEq => Some(BinOp::Shl),
+            TokenKind::ShrEq => Some(BinOp::Shr),
+            TokenKind::UShrEq => Some(BinOp::UShr),
+            _ => None,
+        }
+    }
+
     fn parse_assignment(&mut self) -> Result<Expr, ParseError> {
-        let expr = self.parse_or()?;
+        let expr = self.parse_ternary()?;
         if self.check(&TokenKind::Eq) {
             let line = self.advance().line;
             let value = self.parse_assignment()?;
@@ -327,7 +346,36 @@ impl Parser {
                 line,
             });
         }
+        if let Some(op) = Self::compound_assign_op(self.peek_kind()) {
+            let line = self.advance().line;
+            let value = self.parse_assignment()?;
+            return Ok(Expr::CompoundAssign {
+                id: self.fresh_id(),
+                op,
+                target: Box::new(expr),
+                value: Box::new(value),
+                line,
+            });
+        }
         Ok(expr)
+    }
+
+    fn parse_ternary(&mut self) -> Result<Expr, ParseError> {
+        let cond = self.parse_or()?;
+        if self.check(&TokenKind::Question) {
+            let line = self.advance().line;
+            let then_branch = self.parse_expr()?;
+            self.expect(TokenKind::Colon)?;
+            let else_branch = self.parse_ternary()?;
+            return Ok(Expr::Ternary {
+                id: self.fresh_id(),
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+                line,
+            });
+        }
+        Ok(cond)
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
@@ -347,13 +395,61 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_bit_or()?;
         while self.check(&TokenKind::AndAnd) {
+            let line = self.advance().line;
+            let right = self.parse_bit_or()?;
+            expr = Expr::Binary {
+                id: self.fresh_id(),
+                op: BinOp::And,
+                left: Box::new(expr),
+                right: Box::new(right),
+                line,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_bit_xor()?;
+        while self.check(&TokenKind::Pipe) {
+            let line = self.advance().line;
+            let right = self.parse_bit_xor()?;
+            expr = Expr::Binary {
+                id: self.fresh_id(),
+                op: BinOp::BitOr,
+                left: Box::new(expr),
+                right: Box::new(right),
+                line,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_bit_and()?;
+        while self.check(&TokenKind::Caret) {
+            let line = self.advance().line;
+            let right = self.parse_bit_and()?;
+            expr = Expr::Binary {
+                id: self.fresh_id(),
+                op: BinOp::BitXor,
+                left: Box::new(expr),
+                right: Box::new(right),
+                line,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_equality()?;
+        while self.check(&TokenKind::Amp) {
             let line = self.advance().line;
             let right = self.parse_equality()?;
             expr = Expr::Binary {
                 id: self.fresh_id(),
-                op: BinOp::And,
+                op: BinOp::BitAnd,
                 left: Box::new(expr),
                 right: Box::new(right),
                 line,
@@ -386,7 +482,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_term()?;
+        let mut expr = self.parse_shift()?;
         loop {
             let op = if self.check(&TokenKind::Lt) {
                 BinOp::Lt
@@ -396,6 +492,31 @@ impl Parser {
                 BinOp::Gt
             } else if self.check(&TokenKind::GtEq) {
                 BinOp::GtEq
+            } else {
+                break;
+            };
+            let line = self.advance().line;
+            let right = self.parse_shift()?;
+            expr = Expr::Binary {
+                id: self.fresh_id(),
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+                line,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_term()?;
+        loop {
+            let op = if self.check(&TokenKind::Shl) {
+                BinOp::Shl
+            } else if self.check(&TokenKind::Shr) {
+                BinOp::Shr
+            } else if self.check(&TokenKind::UShr) {
+                BinOp::UShr
             } else {
                 break;
             };
@@ -461,12 +582,31 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        if self.check(&TokenKind::Bang) || self.check(&TokenKind::Minus) {
+        if self.check(&TokenKind::PlusPlus) || self.check(&TokenKind::MinusMinus) {
             let tok = self.advance();
-            let op = if tok.kind == TokenKind::Bang {
-                UnOp::Not
+            let op = if tok.kind == TokenKind::PlusPlus {
+                IncDecOp::Inc
             } else {
-                UnOp::Neg
+                IncDecOp::Dec
+            };
+            // The operand of prefix ++/-- binds at unary precedence (so
+            // `++arr[i]` targets the index expression, not just `arr`),
+            // matching Java.
+            let target = self.parse_unary()?;
+            return Ok(Expr::IncDec {
+                id: self.fresh_id(),
+                op,
+                target: Box::new(target),
+                is_prefix: true,
+                line: tok.line,
+            });
+        }
+        if self.check(&TokenKind::Bang) || self.check(&TokenKind::Minus) || self.check(&TokenKind::Tilde) {
+            let tok = self.advance();
+            let op = match tok.kind {
+                TokenKind::Bang => UnOp::Not,
+                TokenKind::Tilde => UnOp::BitNot,
+                _ => UnOp::Neg,
             };
             let operand = self.parse_unary()?;
             return Ok(Expr::Unary {
@@ -504,6 +644,24 @@ impl Parser {
             } else {
                 break;
             }
+        }
+        // Postfix ++/-- binds once, after the full index/field-access
+        // chain (e.g. `arr[i]++`) — not inside the loop above, since Java
+        // disallows chaining (`x++++` is a parse error, not two decrements).
+        if self.check(&TokenKind::PlusPlus) || self.check(&TokenKind::MinusMinus) {
+            let tok = self.advance();
+            let op = if tok.kind == TokenKind::PlusPlus {
+                IncDecOp::Inc
+            } else {
+                IncDecOp::Dec
+            };
+            expr = Expr::IncDec {
+                id: self.fresh_id(),
+                op,
+                target: Box::new(expr),
+                is_prefix: false,
+                line: tok.line,
+            };
         }
         Ok(expr)
     }
@@ -846,6 +1004,258 @@ mod tests {
         };
         assert_eq!(*op, BinOp::Eq);
         assert!(matches!(**left, Expr::Index { .. }));
+    }
+
+    #[test]
+    fn parses_ternary_expression() {
+        let decl = parse_one_decl("void main() { int max = a > b ? a : b; }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::VarDecl(vd) = &f.body.stmts[0] else {
+            panic!("expected VarDecl")
+        };
+        let Some(Expr::Ternary { cond, .. }) = &vd.init else {
+            panic!("expected Ternary init, got {:?}", vd.init)
+        };
+        assert!(matches!(**cond, Expr::Binary { op: BinOp::Gt, .. }));
+    }
+
+    #[test]
+    fn ternary_is_right_associative_and_binds_looser_than_assignment() {
+        // a ? b : c ? d : e  must parse as  a ? b : (c ? d : e)
+        let decl = parse_one_decl("void main() { int x = a ? b : c ? d : e; }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::VarDecl(vd) = &f.body.stmts[0] else {
+            panic!("expected VarDecl")
+        };
+        let Some(Expr::Ternary { else_branch, .. }) = &vd.init else {
+            panic!("expected Ternary init")
+        };
+        assert!(matches!(**else_branch, Expr::Ternary { .. }));
+    }
+
+    #[test]
+    fn parses_compound_assignment_operators() {
+        let cases: &[(&str, BinOp)] = &[
+            ("x += 1;", BinOp::Add),
+            ("x -= 1;", BinOp::Sub),
+            ("x *= 1;", BinOp::Mul),
+            ("x /= 1;", BinOp::Div),
+            ("x %= 1;", BinOp::Mod),
+            ("x &= 1;", BinOp::BitAnd),
+            ("x |= 1;", BinOp::BitOr),
+            ("x ^= 1;", BinOp::BitXor),
+            ("x <<= 1;", BinOp::Shl),
+            ("x >>= 1;", BinOp::Shr),
+        ];
+        for (src, expected_op) in cases {
+            let decl = parse_one_decl(&format!("void main() {{ {src} }}"));
+            let Decl::Func(f) = decl else {
+                panic!("expected FuncDecl")
+            };
+            let Stmt::Expr(Expr::CompoundAssign { op, target, .. }) = &f.body.stmts[0] else {
+                panic!("expected CompoundAssign statement for {src}")
+            };
+            assert_eq!(op, expected_op, "wrong op for {src}");
+            assert!(matches!(**target, Expr::Ident { .. }));
+        }
+    }
+
+    #[test]
+    fn compound_assignment_works_on_array_index_target() {
+        // The exact double-evaluation hazard case from the Operators Plan.
+        let decl = parse_one_decl("void main() { arr[f()] += 1; }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::CompoundAssign { target, .. }) = &f.body.stmts[0] else {
+            panic!("expected CompoundAssign statement")
+        };
+        assert!(matches!(**target, Expr::Index { .. }));
+    }
+
+    #[test]
+    fn parses_bitwise_and_shift_binary_operators() {
+        let cases: &[(&str, BinOp)] = &[
+            ("a & b", BinOp::BitAnd),
+            ("a | b", BinOp::BitOr),
+            ("a ^ b", BinOp::BitXor),
+            ("a << b", BinOp::Shl),
+            ("a >> b", BinOp::Shr),
+        ];
+        for (src, expected_op) in cases {
+            let decl = parse_one_decl(&format!("void main() {{ print({src}); }}"));
+            let Decl::Func(f) = decl else {
+                panic!("expected FuncDecl")
+            };
+            let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else {
+                panic!("expected call statement")
+            };
+            assert!(
+                matches!(&args[0], Expr::Binary { op, .. } if op == expected_op),
+                "wrong op for {src}: {:?}",
+                args[0]
+            );
+        }
+    }
+
+    #[test]
+    fn parses_unary_bitwise_not() {
+        let decl = parse_one_decl("void main() { print(~a); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args[0],
+            Expr::Unary { op: UnOp::BitNot, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_unsigned_right_shift() {
+        let decl = parse_one_decl("void main() { print(a >>> b); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args[0],
+            Expr::Binary { op: BinOp::UShr, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_unsigned_right_shift_compound_assign() {
+        let decl = parse_one_decl("void main() { x >>>= 1; }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::CompoundAssign { op, .. }) = &f.body.stmts[0] else {
+            panic!("expected CompoundAssign statement")
+        };
+        assert_eq!(*op, BinOp::UShr);
+    }
+
+    #[test]
+    fn parses_prefix_increment_and_decrement() {
+        let decl = parse_one_decl("void main() { print(++x); print(--y); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args: args1, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args1[0],
+            Expr::IncDec { op: IncDecOp::Inc, is_prefix: true, .. }
+        ));
+        let Stmt::Expr(Expr::Call { args: args2, .. }) = &f.body.stmts[1] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args2[0],
+            Expr::IncDec { op: IncDecOp::Dec, is_prefix: true, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_postfix_increment_and_decrement() {
+        let decl = parse_one_decl("void main() { print(x++); print(y--); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args: args1, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args1[0],
+            Expr::IncDec { op: IncDecOp::Inc, is_prefix: false, .. }
+        ));
+        let Stmt::Expr(Expr::Call { args: args2, .. }) = &f.body.stmts[1] else {
+            panic!("expected call statement")
+        };
+        assert!(matches!(
+            &args2[0],
+            Expr::IncDec { op: IncDecOp::Dec, is_prefix: false, .. }
+        ));
+    }
+
+    #[test]
+    fn postfix_increment_applies_to_full_index_chain() {
+        // arr[i]++ must target the Index expression, not just `arr`.
+        let decl = parse_one_decl("void main() { arr[i]++; }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::IncDec { target, is_prefix, .. }) = &f.body.stmts[0] else {
+            panic!("expected IncDec statement")
+        };
+        assert!(!is_prefix);
+        assert!(matches!(**target, Expr::Index { .. }));
+    }
+
+    #[test]
+    fn postfix_increment_does_not_chain() {
+        // x++++ is not two decrements/increments — the second `++` has
+        // nothing valid to attach to as a postfix op after the first, so it
+        // should fail to parse (not silently accept it).
+        assert!(parse_source("void main() { x++++; }").is_err());
+    }
+
+    #[test]
+    fn bitwise_and_binds_tighter_than_bitwise_or() {
+        // a | b & c must parse as a | (b & c)
+        let decl = parse_one_decl("void main() { print(a | b & c); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        let Expr::Binary { op, right, .. } = &args[0] else {
+            panic!("expected top-level Binary")
+        };
+        assert_eq!(*op, BinOp::BitOr);
+        assert!(matches!(**right, Expr::Binary { op: BinOp::BitAnd, .. }));
+    }
+
+    #[test]
+    fn shift_binds_looser_than_additive_but_tighter_than_comparison() {
+        // a << b + c must parse as a << (b + c)
+        let decl = parse_one_decl("void main() { print(a << b + c); }");
+        let Decl::Func(f) = decl else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        let Expr::Binary { op, right, .. } = &args[0] else {
+            panic!("expected top-level Binary")
+        };
+        assert_eq!(*op, BinOp::Shl);
+        assert!(matches!(**right, Expr::Binary { op: BinOp::Add, .. }));
+
+        // a < b << c must parse as a < (b << c) — shift binds tighter than comparison
+        let decl2 = parse_one_decl("void main() { print(a < b << c); }");
+        let Decl::Func(f2) = decl2 else {
+            panic!("expected FuncDecl")
+        };
+        let Stmt::Expr(Expr::Call { args: args2, .. }) = &f2.body.stmts[0] else {
+            panic!("expected call statement")
+        };
+        let Expr::Binary { op: op2, right: right2, .. } = &args2[0] else {
+            panic!("expected top-level Binary")
+        };
+        assert_eq!(*op2, BinOp::Lt);
+        assert!(matches!(**right2, Expr::Binary { op: BinOp::Shl, .. }));
     }
 
     #[test]

@@ -518,6 +518,183 @@ mod tests {
             .any(|e| matches!(e, SemaError::UndeclaredIdentifier { .. })));
     }
 
+    // ---- P1 Phase 9 (Operators): ternary, compound assignment, bitwise, shift ----
+
+    #[test]
+    fn valid_ternary_expression() {
+        expect_ok("void main() { int x = true ? 1 : 2; }");
+    }
+
+    #[test]
+    fn errors_on_non_bool_ternary_condition() {
+        let errors = expect_errors("void main() { int x = 1 ? 1 : 2; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::NonBoolCondition { .. })));
+    }
+
+    #[test]
+    fn errors_on_ternary_branch_type_mismatch() {
+        let errors = expect_errors(r#"void main() { int x = true ? 1 : "a"; }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_void_typed_ternary_branch() {
+        // print() returns Void — a phi node can't be void-typed, so this
+        // must be rejected here rather than discovered by codegen.
+        let errors = expect_errors("void main() { true ? print(1) : print(2); }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn valid_compound_assignment_on_variable_and_array_index() {
+        expect_ok(
+            r#"
+            void main() {
+                int x = 1;
+                x += 2;
+                x -= 1;
+                x *= 3;
+                x /= 2;
+                x %= 2;
+                int[] arr = [1, 2, 3];
+                arr[0] += 10;
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn valid_bitwise_compound_assignment() {
+        expect_ok(
+            r#"
+            void main() {
+                int x = 5;
+                x &= 3;
+                x |= 8;
+                x ^= 1;
+                x <<= 2;
+                x >>= 1;
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn errors_on_compound_assign_type_mismatch() {
+        let errors = expect_errors(r#"void main() { int x = 1; x += "a"; }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_compound_assign_to_invalid_target() {
+        let errors = expect_errors("void main() { 5 += 1; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::InvalidAssignTarget { .. })));
+    }
+
+    #[test]
+    fn valid_bitwise_and_shift_binary_ops() {
+        expect_ok(
+            r#"
+            void main() {
+                int a = 5 & 3;
+                int b = 5 | 3;
+                int c = 5 ^ 3;
+                int d = ~5;
+                int e = 1 << 4;
+                int f = 16 >> 2;
+                print(a);
+                print(b);
+                print(c);
+                print(d);
+                print(e);
+                print(f);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn errors_on_bitwise_op_with_non_int_operand() {
+        let errors = expect_errors("void main() { bool b = true; int x = b & 1; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_bitwise_not_on_non_int() {
+        let errors = expect_errors("void main() { bool b = true; int x = ~b; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn valid_unsigned_right_shift() {
+        expect_ok("void main() { int x = -1 >>> 1; print(x); }");
+    }
+
+    #[test]
+    fn valid_unsigned_right_shift_compound_assign() {
+        expect_ok("void main() { int x = -1; x >>>= 1; print(x); }");
+    }
+
+    #[test]
+    fn valid_prefix_and_postfix_inc_dec_on_variable() {
+        expect_ok(
+            r#"
+            void main() {
+                int x = 5;
+                print(++x);
+                print(x++);
+                print(--x);
+                print(x--);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn valid_inc_dec_on_array_index_and_float() {
+        expect_ok(
+            r#"
+            void main() {
+                int[] arr = [1, 2, 3];
+                arr[0]++;
+                ++arr[1];
+                float f = 1.5;
+                f++;
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn errors_on_inc_dec_on_invalid_target() {
+        let errors = expect_errors("void main() { 5++; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::InvalidAssignTarget { .. })));
+    }
+
+    #[test]
+    fn errors_on_inc_dec_on_non_numeric_type() {
+        let errors = expect_errors("void main() { bool b = true; b++; }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
     /// Every P0 benchmark program (see docs/ANX-Implementation-Plan-v1.md
     /// Phase 7) must type-check cleanly now, even though nothing can execute
     /// them yet (Phase 3's exit gate) — this is the earliest point at which
