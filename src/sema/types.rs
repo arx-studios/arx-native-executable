@@ -118,6 +118,8 @@ impl Checker {
                     Some(Type::Int)
                 } else if lt == Type::Float && rt == Type::Float {
                     Some(Type::Float)
+                } else if op == Add && lt == Type::Str && rt == Type::Str {
+                    Some(Type::Str)
                 } else {
                     self.errors.push(SemaError::TypeMismatch {
                         expected: format!("{lt:?}"),
@@ -426,7 +428,7 @@ impl Checker {
     fn check_field_access(&mut self, object: &Expr, field: &str, line: usize) -> Option<Type> {
         let obj_ty = self.check_expr(object)?;
         match (&obj_ty, field) {
-            (Type::Array(_), "length") => Some(Type::Int),
+            (Type::Array(_), "length") | (Type::Str, "length") => Some(Type::Int),
             _ => {
                 self.errors.push(SemaError::UnknownField {
                     name: format!("{obj_ty:?}"),

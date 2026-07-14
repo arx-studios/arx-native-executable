@@ -15,6 +15,8 @@ pub enum RuntimeError {
     DivisionByZero,
     #[error("array size must be non-negative, found {size}")]
     NegativeArraySize { size: i64 },
+    #[error("string index {index} out of bounds for length {length}")]
+    StringIndexOutOfBounds { index: i64, length: usize },
 }
 
 pub fn interpret(program: &Program) -> Result<(), RuntimeError> {
@@ -300,7 +302,10 @@ impl<'a> Interpreter<'a> {
     /// `||=` in the grammar).
     fn apply_binary_op(&self, op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         match op {
-            BinOp::Add => Ok(numeric_op(l, r, |a, b| a + b, |a, b| a + b)),
+            BinOp::Add => match (l, r) {
+                (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
+                (l, r) => Ok(numeric_op(l, r, |a, b| a + b, |a, b| a + b)),
+            },
             BinOp::Sub => Ok(numeric_op(l, r, |a, b| a - b, |a, b| a - b)),
             BinOp::Mul => Ok(numeric_op(l, r, |a, b| a * b, |a, b| a * b)),
             BinOp::Div => match (l, r) {
@@ -535,7 +540,63 @@ impl<'a> Interpreter<'a> {
         for a in args {
             arg_values.push(self.eval_expr(a, env)?);
         }
+        match callee {
+            "length" => return self.eval_string_length(&arg_values),
+            "charAt" => return self.eval_char_at(&arg_values),
+            "substring" => return self.eval_substring(&arg_values),
+            _ => {}
+        }
         self.call_function(callee, &arg_values)
+    }
+
+    // `length()` counts bytes, not Unicode scalars — matches what's cheap in
+    // the LLVM runtime shim (strlen-equivalent) and what Java's `.length()`
+    // effectively does too (see docs/P2/ANX-P2-Strings-Plan-v1.md §5).
+    fn eval_string_length(&self, args: &[Value]) -> Result<Value, RuntimeError> {
+        match &args[0] {
+            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+            _ => unreachable!("sema guarantees a string operand for length()"),
+        }
+    }
+
+    fn eval_char_at(&self, args: &[Value]) -> Result<Value, RuntimeError> {
+        match (&args[0], &args[1]) {
+            (Value::Str(s), Value::Int(i)) => {
+                let bytes = s.as_bytes();
+                if *i < 0 || *i as usize >= bytes.len() {
+                    return Err(RuntimeError::StringIndexOutOfBounds {
+                        index: *i,
+                        length: bytes.len(),
+                    });
+                }
+                Ok(Value::Str((bytes[*i as usize] as char).to_string()))
+            }
+            _ => unreachable!("sema guarantees (string, int) operands for charAt()"),
+        }
+    }
+
+    fn eval_substring(&self, args: &[Value]) -> Result<Value, RuntimeError> {
+        match (&args[0], &args[1], &args[2]) {
+            (Value::Str(s), Value::Int(start), Value::Int(end)) => {
+                let bytes = s.as_bytes();
+                let len = bytes.len();
+                if *start < 0 || *start as usize > len {
+                    return Err(RuntimeError::StringIndexOutOfBounds {
+                        index: *start,
+                        length: len,
+                    });
+                }
+                if *end < *start || *end as usize > len {
+                    return Err(RuntimeError::StringIndexOutOfBounds {
+                        index: *end,
+                        length: len,
+                    });
+                }
+                let slice = &bytes[*start as usize..*end as usize];
+                Ok(Value::Str(String::from_utf8_lossy(slice).into_owned()))
+            }
+            _ => unreachable!("sema guarantees (string, int, int) operands for substring()"),
+        }
     }
 
     fn eval_index(
@@ -570,7 +631,8 @@ impl<'a> Interpreter<'a> {
         let obj_val = self.eval_expr(object, env)?;
         match (obj_val, field) {
             (Value::Array(cells), "length") => Ok(Value::Int(cells.borrow().len() as i64)),
-            _ => unreachable!("sema guarantees only array.length field access"),
+            (Value::Str(s), "length") => Ok(Value::Int(s.len() as i64)),
+            _ => unreachable!("sema guarantees only array.length/string.length field access"),
         }
     }
 }
@@ -1069,4 +1131,142 @@ mod tests {
         ["4"]
     );
     benchmark_produces_output!(benchmark_20_max_subarray, "20_max_subarray.nx", ["6"]);
+
+    // ---- P2 (Strings) ----
+
+    #[test]
+    fn evaluates_string_length_charat_substring() {
+        let out = run_captured(
+            r#"
+            void main() {
+                string s = "hello";
+                print(length(s));
+                print(s.length);
+                print(charAt(s, 1));
+                print(substring(s, 1, 4));
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["5", "5", "e", "ell"]);
+    }
+
+    #[test]
+    fn evaluates_string_concat_and_equality() {
+        let out = run_captured(
+            r#"
+            void main() {
+                string a = "foo";
+                string b = "bar";
+                print(a + b);
+                print(a == "foo");
+                print(a != b);
+                print(a + b == "foobar");
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["foobar", "true", "true", "true"]);
+    }
+
+    #[test]
+    fn errors_on_char_at_out_of_bounds() {
+        let err = run_expect_runtime_error(
+            r#"
+            void main() {
+                string s = "hi";
+                print(charAt(s, 5));
+            }
+            "#,
+        );
+        assert!(matches!(err, RuntimeError::StringIndexOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn errors_on_substring_out_of_bounds() {
+        let err = run_expect_runtime_error(
+            r#"
+            void main() {
+                string s = "hi";
+                print(substring(s, 0, 5));
+            }
+            "#,
+        );
+        assert!(matches!(err, RuntimeError::StringIndexOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn solves_is_palindrome_via_charat_loop() {
+        let out = run_captured(
+            r#"
+            bool isPalindrome(string s) {
+                int i = 0;
+                int j = length(s) - 1;
+                while (i < j) {
+                    if (charAt(s, i) != charAt(s, j)) return false;
+                    i = i + 1;
+                    j = j - 1;
+                }
+                return true;
+            }
+            void main() {
+                print(isPalindrome("racecar"));
+                print(isPalindrome("hello"));
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["true", "false"]);
+    }
+
+    #[test]
+    fn solves_build_reversed_string_via_concat_loop() {
+        let out = run_captured(
+            r#"
+            string reverse(string s) {
+                string result = "";
+                int i = length(s) - 1;
+                while (i >= 0) {
+                    result = result + charAt(s, i);
+                    i = i - 1;
+                }
+                return result;
+            }
+            void main() {
+                print(reverse("hello"));
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["olleh"]);
+    }
+
+    #[test]
+    fn solves_valid_anagram_via_letter_counting() {
+        let out = run_captured(
+            r#"
+            int countChar(string s, string c) {
+                int count = 0;
+                int i = 0;
+                while (i < length(s)) {
+                    if (charAt(s, i) == c) count = count + 1;
+                    i = i + 1;
+                }
+                return count;
+            }
+            bool isAnagram(string a, string b) {
+                if (length(a) != length(b)) return false;
+                string alphabet = "abcdefghijklmnopqrstuvwxyz";
+                int k = 0;
+                while (k < length(alphabet)) {
+                    string c = charAt(alphabet, k);
+                    if (countChar(a, c) != countChar(b, c)) return false;
+                    k = k + 1;
+                }
+                return true;
+            }
+            void main() {
+                print(isAnagram("cat", "act"));
+                print(isAnagram("cat", "dog"));
+            }
+            "#,
+        );
+        assert_eq!(out, vec!["true", "false"]);
+    }
 }

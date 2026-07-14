@@ -1,7 +1,7 @@
 # ANX — P1 Progress Tracker (v1)
 
 **Companion to:** [ANX-Progress-v1.md](../P0/ANX-Progress-v1.md) (P0, frozen), [ANX-P1-Operators-Plan-v1.md](ANX-P1-Operators-Plan-v1.md), [ANX-P1-Dogfooding-Notes-v1.md](ANX-P1-Dogfooding-Notes-v1.md)
-**Scope:** P1 = Operators only (ternary, compound assignment, bitwise, shift). Every other post-P0 slice now has its own folder/tracker: [P2 Strings](../P2/ANX-P2-Strings-Plan-v1.md), [P3 Classes](../P3/ANX-P3-Classes-Plan-v1.md), [P4 Generics](../P4/ANX-P4-Generics-Plan-v1.md), [P5 Collections](../P5/ANX-P5-Collections-Plan-v1.md), [P6 Tree/Graph](../P6/ANX-P6-TreeGraph-Plan-v1.md), [P7 Diagnostics](../P7/ANX-P7-Diagnostics-Plan-v1.md), [P8 Benchmark suite](../P8/ANX-P8-BenchmarkSuite-Plan-v1.md) — a flat one-slice-per-number scheme, not the PRD's own milestone labels (see [P3's numbering note](../P3/ANX-P3-Classes-Plan-v1.md)).
+**Scope:** P1 = Operators only. Every later slice (strings, classes, generics, collections, Tree/Graph, diagnostics, benchmark suite) has its own folder and tracker — see the repo's [docs index](../../README.md#docs) rather than this file for those.
 **Purpose:** living record of what's actually been built for P1 — check this before assuming its state; it's the source of truth over memory of past conversations.
 
 **How to update:** same discipline as the P0 tracker — when the exit gate is met, flip the status, append a changelog line with date and commit hash.
@@ -27,13 +27,13 @@ All six planned steps implemented in order: lexer (17 new tokens), parser (4 new
 - `>>>` turned out cheap: the LLVM builder call already used for `>>` (`build_right_shift`) already took a `sign_extend: bool` parameter — `>>>` is just the same call with `false` instead of `true`, both in codegen and (via `(a as u64).wrapping_shr(...)`) in the interpreter.
 - **`instanceof` deliberately not implemented** — flagged to the user rather than built hollow: it requires runtime type-checking against a class hierarchy with subtyping, but the P3 Classes Plan already decided interfaces/inheritance/virtual dispatch are dropped from the roadmap entirely (static dispatch only). Without subtyping, `instanceof` has no real question to answer in ANX — a variable's type is already known statically. Revisit only if a future decision reintroduces some form of subtyping.
 - 3 new lexer tests, 6 new parser tests, 6 new sema tests, 5 new interpreter tests, 8 new codegen tests (incl. 6 JIT correctness checks) — 28 more tests, 224 total passing, 0 regressions.
-- Not yet committed.
+- Commit: `224e144` (covers all of the above — original Operators work and this extension were committed together) — pushed.
 
 ---
 
 ## Changelog
 
 - **2026-07-14** — Docs reorganized: `docs/P0/` (frozen) and `docs/P1/` (active) created.
-- **2026-07-14** — Operators complete: ternary, compound assignment, bitwise, shift — full lexer→parser→sema→interp→codegen pipeline, 42 new tests, 196 total passing. Fixed a sema gap (void-typed ternary branches) found while designing codegen, and flagged a separate pre-existing P0 gap (codegen has no global-variable support) found incidentally while writing tests. Re-solved the P0 dogfooding "Single Number" friction point with real XOR — confirmed closed on both paths. Not yet committed.
-- **2026-07-14** — Docs restructured to a flat `P0`–`P8` scheme, one number per major slice (previously P1 bundled six future slices together). Strings → `docs/P2/`; Classes/Generics/Collections/Tree-Graph/Diagnostics/Benchmark split into their own `docs/P3/`–`docs/P8/` folders. Interfaces/AI-tutor/visualizer/IDE tooling (the PRD's old P2 milestone) dropped from the roadmap entirely, not deferred. This tracker rewritten to cover P1/Operators only.
-- **2026-07-14** — Operators extended against a full Java-operator checklist: added `++`/`--` (prefix + postfix, correct differing return values) and `>>>`/`>>>=` (unsigned/logical right shift). `instanceof` explicitly not implemented — flagged as requiring a class hierarchy with subtyping that the roadmap has already decided not to build. 28 more tests, 224 total passing. Not yet committed.
+- **2026-07-14** — Operators complete: ternary, compound assignment, bitwise, shift — full lexer→parser→sema→interp→codegen pipeline, 42 new tests, 196 total passing. Fixed a sema gap (void-typed ternary branches) found while designing codegen, and flagged a separate pre-existing P0 gap (codegen has no global-variable support) found incidentally while writing tests. Re-solved the P0 dogfooding "Single Number" friction point with real XOR — confirmed closed on both paths. Commit `224e144` (bundled with the extension below), pushed.
+- **2026-07-14** — Docs restructured to a flat `P0`–`P8` scheme, one number per major slice. This tracker rewritten to cover P1/Operators only — see the repo docs index for everything else. Commit `0c2bad5`, pushed.
+- **2026-07-14** — Operators extended against a full Java-operator checklist: added `++`/`--` (prefix + postfix, correct differing return values) and `>>>`/`>>>=` (unsigned/logical right shift). `instanceof` explicitly not implemented — flagged as requiring a class hierarchy with subtyping the roadmap has already decided not to build. 28 more tests, 224 total passing. Commit `224e144`, pushed.

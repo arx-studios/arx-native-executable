@@ -101,19 +101,20 @@ impl<'ctx> Codegen<'ctx> {
             Type::Int => self.context.i64_type().into(),
             Type::Float => self.context.f64_type().into(),
             Type::Bool => self.context.bool_type().into(),
-            Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
-            Type::Array(_) => self.array_struct_type().into(),
+            Type::Str | Type::Array(_) => self.len_data_struct_type().into(),
             Type::Void => unreachable!("void is not a value-carrying type"),
         }
     }
 
-    /// The `{ i64 length, ptr data }` layout every array uses regardless of
-    /// element type — opaque pointers mean `data`'s LLVM type never encodes
-    /// the element type, so this struct shape is the same for `int[]`,
-    /// `float[]`, etc. The *logical* element type only matters when
-    /// generating a GEP into `data`, which is why those call sites consult
-    /// `self.sema.types` instead.
-    fn array_struct_type(&self) -> inkwell::types::StructType<'ctx> {
+    /// The `{ i64 length, ptr data }` layout shared by arrays *and* strings
+    /// (P2 — mirrors the array struct exactly, per
+    /// docs/P2/ANX-P2-Strings-Plan-v1.md). Opaque pointers mean `data`'s
+    /// LLVM type never encodes the array element type, so this struct shape
+    /// is the same for `int[]`, `float[]`, `string`, etc. The *logical*
+    /// element type only matters when generating a GEP into an array's
+    /// `data`, which is why those call sites consult `self.sema.types`
+    /// instead.
+    fn len_data_struct_type(&self) -> inkwell::types::StructType<'ctx> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
         self.context
             .struct_type(&[self.context.i64_type().into(), ptr_ty.into()], false)
@@ -429,13 +430,8 @@ impl<'ctx> Codegen<'ctx> {
             Type::Int => self.context.i64_type().const_int(0, false).into(),
             Type::Float => self.context.f64_type().const_float(0.0).into(),
             Type::Bool => self.context.bool_type().const_int(0, false).into(),
-            Type::Str => self
-                .context
-                .ptr_type(AddressSpace::default())
-                .const_null()
-                .into(),
-            Type::Array(_) => {
-                let struct_ty = self.array_struct_type();
+            Type::Str | Type::Array(_) => {
+                let struct_ty = self.len_data_struct_type();
                 let zero_len = self.context.i64_type().const_int(0, false);
                 let null_data = self.context.ptr_type(AddressSpace::default()).const_null();
                 struct_ty
@@ -465,13 +461,19 @@ impl<'ctx> Codegen<'ctx> {
                     .const_int(*value as u64, false)
                     .into(),
             ),
-            Expr::StringLiteral { value, .. } => Some(
-                self.builder
+            Expr::StringLiteral { value, .. } => {
+                // A null-terminated global byte buffer wrapped in the same
+                // `{ i64 length, ptr data }` struct arrays use — the
+                // terminator lets `anx_print_str` keep treating `data` as a
+                // plain C string with no separate lowering path.
+                let data_ptr = self
+                    .builder
                     .build_global_string_ptr(value, "strlit")
                     .unwrap()
-                    .as_pointer_value()
-                    .into(),
-            ),
+                    .as_pointer_value();
+                let len_val = self.context.i64_type().const_int(value.len() as u64, false);
+                Some(self.build_len_data_struct(len_val, data_ptr))
+            }
             Expr::Null { .. } => {
                 Some(self.context.ptr_type(AddressSpace::default()).const_null().into())
             }
@@ -527,12 +529,72 @@ impl<'ctx> Codegen<'ctx> {
         let l = self.codegen_expr(left, scopes).unwrap();
         let r = self.codegen_expr(right, scopes).unwrap();
 
-        let result: BasicValueEnum = if l.is_int_value() {
-            self.apply_int_binop(op, l.into_int_value(), r.into_int_value()).into()
-        } else {
-            self.apply_float_binop(op, l.into_float_value(), r.into_float_value())
+        let result: BasicValueEnum = match l {
+            BasicValueEnum::IntValue(li) => {
+                self.apply_int_binop(op, li, r.into_int_value()).into()
+            }
+            BasicValueEnum::FloatValue(lf) => {
+                self.apply_float_binop(op, lf, r.into_float_value())
+            }
+            // Only `Str` (never `Array`) reaches a binary op per sema's
+            // `combine_binary_types` — `+`/`==`/`!=` are the only ops it
+            // allows on a struct-valued operand.
+            BasicValueEnum::StructValue(ls) => self.apply_str_binop(op, ls, r.into_struct_value()),
+            _ => unreachable!("sema guarantees int/float/string operands for binary ops"),
         };
         Some(result)
+    }
+
+    /// The string-operand op logic (P2) — same role as `apply_int_binop`/
+    /// `apply_float_binop` above, for the one struct-valued case sema allows
+    /// through a binary op (`Str`).
+    fn apply_str_binop(
+        &mut self,
+        op: BinOp,
+        l: inkwell::values::StructValue<'ctx>,
+        r: inkwell::values::StructValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        match op {
+            BinOp::Add => self.codegen_str_concat(l, r),
+            BinOp::Eq => self.codegen_str_equals(l, r).into(),
+            BinOp::NotEq => {
+                let eq = self.codegen_str_equals(l, r);
+                self.builder.build_not(eq, "strnetmp").unwrap().into()
+            }
+            _ => unreachable!("sema guarantees only +, ==, != for string operands"),
+        }
+    }
+
+    fn codegen_str_concat(
+        &mut self,
+        l: inkwell::values::StructValue<'ctx>,
+        r: inkwell::values::StructValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        self.builder
+            .build_call(self.runtime.str_concat, &[l.into(), r.into()], "strcat")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+    }
+
+    /// Returns i1 (ANX's native `bool` type) — the C shim's i8 return is
+    /// truncated here, at the one call site, matching the i8-boundary
+    /// convention `anx_print_bool` already established for booleans crossing
+    /// this FFI edge.
+    fn codegen_str_equals(
+        &mut self,
+        l: inkwell::values::StructValue<'ctx>,
+        r: inkwell::values::StructValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        let call = self
+            .builder
+            .build_call(self.runtime.str_equals, &[l.into(), r.into()], "streq")
+            .unwrap();
+        let i8_result = call.try_as_basic_value().basic().unwrap().into_int_value();
+        self.builder
+            .build_int_truncate(i8_result, self.context.bool_type(), "streqbool")
+            .unwrap()
     }
 
     /// The int-operand op logic, shared by `codegen_binary` (both operands
@@ -762,12 +824,7 @@ impl<'ctx> Codegen<'ctx> {
                 let e = else_val.into_float_value();
                 phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
             }
-            Type::Str => {
-                let t = then_val.into_pointer_value();
-                let e = else_val.into_pointer_value();
-                phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
-            }
-            Type::Array(_) => {
+            Type::Str | Type::Array(_) => {
                 let t = then_val.into_struct_value();
                 let e = else_val.into_struct_value();
                 phi.add_incoming(&[(&t, then_end_bb), (&e, else_end_bb)]);
@@ -865,11 +922,20 @@ impl<'ctx> Codegen<'ctx> {
         let rhs = self
             .codegen_expr(value, scopes)
             .expect("sema guarantees a non-void compound-assignment value");
-        let new_val: BasicValueEnum = if current.is_int_value() {
-            self.apply_int_binop(op, current.into_int_value(), rhs.into_int_value())
-                .into()
-        } else {
-            self.apply_float_binop(op, current.into_float_value(), rhs.into_float_value())
+        let new_val: BasicValueEnum = match current {
+            BasicValueEnum::IntValue(civ) => self
+                .apply_int_binop(op, civ, rhs.into_int_value())
+                .into(),
+            BasicValueEnum::FloatValue(cfv) => {
+                self.apply_float_binop(op, cfv, rhs.into_float_value())
+            }
+            // Only `s += ...` (string concat) reaches a struct-valued
+            // compound assignment — sema's `combine_binary_types` allows no
+            // other op on `Str`, and never allows `Array` here at all.
+            BasicValueEnum::StructValue(csv) => {
+                self.apply_str_binop(op, csv, rhs.into_struct_value())
+            }
+            _ => unreachable!("sema guarantees int/float/string operands for compound assignment"),
         };
         self.builder.build_store(ptr, new_val).unwrap();
         Some(new_val)
@@ -929,6 +995,18 @@ impl<'ctx> Codegen<'ctx> {
             self.codegen_print(&args[0], scopes);
             return None;
         }
+        // These 3 builtins are pre-registered in sema (see docs/P2/
+        // ANX-P2-Strings-Plan-v1.md §2), not user `Decl::Func`s, so they'd
+        // never be found in `self.functions` below — intercept by name
+        // exactly like `print` above.
+        match callee {
+            "length" => return Some(self.codegen_field_access(&args[0], "length", scopes).unwrap()),
+            "charAt" => return Some(self.codegen_char_at(&args[0], &args[1], scopes)),
+            "substring" => {
+                return Some(self.codegen_substring(&args[0], &args[1], &args[2], scopes))
+            }
+            _ => {}
+        }
         let function = self.functions[callee];
         let arg_values: Vec<_> = args
             .iter()
@@ -967,14 +1045,38 @@ impl<'ctx> Codegen<'ctx> {
                     .build_call(self.runtime.print_float, &[fv.into()], "")
                     .unwrap();
             }
-            BasicValueEnum::PointerValue(pv) => {
-                // Strings are the only pointer-typed print argument any P0
-                // benchmark actually reaches; a bare array isn't printed
-                // directly by any of them (only individual elements are).
-                self.builder
-                    .build_call(self.runtime.print_str, &[pv.into()], "")
-                    .unwrap();
-            }
+            // Strings and arrays are both struct-valued (P2 changed strings
+            // from a bare pointer to the same `{i64, ptr}` shape) — the LLVM
+            // value alone can't tell them apart, so dispatch on sema's
+            // resolved type instead.
+            BasicValueEnum::StructValue(sv) => match self.resolved_type(arg.id()) {
+                Type::Str => {
+                    let data_ptr = self
+                        .builder
+                        .build_extract_value(sv, 1, "strdata")
+                        .unwrap()
+                        .into_pointer_value();
+                    self.builder
+                        .build_call(self.runtime.print_str, &[data_ptr.into()], "")
+                        .unwrap();
+                }
+                Type::Array(_) => {
+                    let len = self
+                        .builder
+                        .build_extract_value(sv, 0, "arrlen")
+                        .unwrap()
+                        .into_int_value();
+                    let data_ptr = self
+                        .builder
+                        .build_extract_value(sv, 1, "arrdata")
+                        .unwrap()
+                        .into_pointer_value();
+                    self.builder
+                        .build_call(self.runtime.print_array, &[len.into(), data_ptr.into()], "")
+                        .unwrap();
+                }
+                _ => unreachable!("sema guarantees only Str/Array are struct-valued"),
+            },
             _ => unreachable!("sema guarantees a printable primitive type"),
         }
     }
@@ -1037,13 +1139,114 @@ impl<'ctx> Codegen<'ctx> {
         field: &str,
         scopes: &mut Scopes<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        debug_assert_eq!(field, "length", "sema guarantees only array.length");
-        let arr_val = self.codegen_expr(object, scopes).unwrap().into_struct_value();
+        debug_assert_eq!(field, "length", "sema guarantees only array.length/string.length");
+        // Also reused directly by codegen_call for the `length(s)` builtin
+        // (see docs/P2/ANX-P2-Strings-Plan-v1.md §2) — same field-0 extract,
+        // no runtime call needed either way.
+        let struct_val = self.codegen_expr(object, scopes).unwrap().into_struct_value();
         Some(
             self.builder
-                .build_extract_value(arr_val, 0, "arrlen")
+                .build_extract_value(struct_val, 0, "lentmp")
                 .unwrap(),
         )
+    }
+
+    /// `charAt(s, i)` — bounds check is inline here (mirrors
+    /// `codegen_index_ptr`'s array check almost line-for-line, per
+    /// docs/P2/ANX-P2-Strings-Plan-v1.md Step 3); the actual 1-byte-string
+    /// allocation happens in the `anx_str_char_at` C shim once the index is
+    /// known valid.
+    fn codegen_char_at(
+        &mut self,
+        s_expr: &Expr,
+        idx_expr: &Expr,
+        scopes: &mut Scopes<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let s_val = self.codegen_expr(s_expr, scopes).unwrap().into_struct_value();
+        let len = self
+            .builder
+            .build_extract_value(s_val, 0, "strlen")
+            .unwrap()
+            .into_int_value();
+        let idx = self.codegen_expr(idx_expr, scopes).unwrap().into_int_value();
+
+        // Same unsigned-compare trick as array indexing: a negative index
+        // wraps to a huge u64, so this one check covers `0 <= idx < len`.
+        let in_bounds = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, idx, len, "charinbounds")
+            .unwrap();
+        self.emit_runtime_guard(
+            in_bounds,
+            self.runtime.panic_str_oob,
+            &[idx.into(), len.into()],
+            "charoob",
+        );
+
+        self.builder
+            .build_call(self.runtime.str_char_at, &[s_val.into(), idx.into()], "charat")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+    }
+
+    /// `substring(s, start, end)` — two sequential inline guards (start in
+    /// `[0, len]`, then end in `[start, len]`), same "guard, then let the
+    /// shim do the real work" shape as `codegen_char_at` above.
+    fn codegen_substring(
+        &mut self,
+        s_expr: &Expr,
+        start_expr: &Expr,
+        end_expr: &Expr,
+        scopes: &mut Scopes<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let s_val = self.codegen_expr(s_expr, scopes).unwrap().into_struct_value();
+        let len = self
+            .builder
+            .build_extract_value(s_val, 0, "strlen")
+            .unwrap()
+            .into_int_value();
+        let start = self.codegen_expr(start_expr, scopes).unwrap().into_int_value();
+        let end = self.codegen_expr(end_expr, scopes).unwrap().into_int_value();
+
+        let start_in_range = self
+            .builder
+            .build_int_compare(IntPredicate::ULE, start, len, "startinrange")
+            .unwrap();
+        self.emit_runtime_guard(
+            start_in_range,
+            self.runtime.panic_str_oob,
+            &[start.into(), len.into()],
+            "substart",
+        );
+
+        let end_le_len = self
+            .builder
+            .build_int_compare(IntPredicate::ULE, end, len, "endinrange")
+            .unwrap();
+        let start_le_end = self
+            .builder
+            .build_int_compare(IntPredicate::SLE, start, end, "startleend")
+            .unwrap();
+        let end_valid = self.builder.build_and(end_le_len, start_le_end, "endok").unwrap();
+        self.emit_runtime_guard(
+            end_valid,
+            self.runtime.panic_str_oob,
+            &[end.into(), len.into()],
+            "subend",
+        );
+
+        self.builder
+            .build_call(
+                self.runtime.str_substring,
+                &[s_val.into(), start.into(), end.into()],
+                "substr",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
     }
 
     fn codegen_array_literal(
@@ -1092,7 +1295,7 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         let n_val = self.context.i64_type().const_int(n, false);
-        self.build_array_struct(n_val, data_ptr)
+        self.build_len_data_struct(n_val, data_ptr)
     }
 
     fn codegen_array_creation(
@@ -1128,15 +1331,15 @@ impl<'ctx> Codegen<'ctx> {
             .unwrap()
             .into_pointer_value();
 
-        self.build_array_struct(n, data_ptr)
+        self.build_len_data_struct(n, data_ptr)
     }
 
-    fn build_array_struct(
+    fn build_len_data_struct(
         &self,
         length_val: IntValue<'ctx>,
         data_ptr: PointerValue<'ctx>,
     ) -> BasicValueEnum<'ctx> {
-        let struct_ty = self.array_struct_type();
+        let struct_ty = self.len_data_struct_type();
         let undef = struct_ty.get_undef();
         let with_len = self
             .builder
@@ -1202,12 +1405,79 @@ mod tests {
     extern "C" fn jit_stub_panic_neg_size(size: i64) {
         panic!("JIT hit negative-array-size panic: {size}");
     }
+    extern "C" fn jit_stub_panic_str_oob(index: i64, length: i64) {
+        panic!("JIT hit string bounds panic: index {index}, length {length}");
+    }
+
+    /// Bit-for-bit mirrors codegen's `{ i64 length, ptr data }` LLVM struct
+    /// (`repr(C)`, same two 8-byte fields, no padding) — needed so these
+    /// stand-in Rust functions can be called with the exact by-value struct
+    /// ABI the JIT-compiled IR expects.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct JitAnxStr {
+        length: i64,
+        data: *const u8,
+    }
+
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut u8;
+    }
+
+    // Real (not panic-stub) implementations of the string runtime shim,
+    // mirroring runtime.c's anx_str_* functions exactly — unlike the panic
+    // stubs above, the happy-path string JIT tests actually need these to
+    // work, not just exist. `anx build` links the real C versions instead;
+    // this in-process JIT path can't reach runtime.c at all, so a same-logic
+    // Rust stand-in is the only way to JIT-execute these builtins directly.
+    extern "C" fn jit_stub_str_concat(a: JitAnxStr, b: JitAnxStr) -> JitAnxStr {
+        unsafe {
+            let new_len = (a.length + b.length) as usize;
+            let buf = malloc(new_len + 1);
+            std::ptr::copy_nonoverlapping(a.data, buf, a.length as usize);
+            std::ptr::copy_nonoverlapping(b.data, buf.add(a.length as usize), b.length as usize);
+            *buf.add(new_len) = 0;
+            JitAnxStr { length: new_len as i64, data: buf }
+        }
+    }
+    extern "C" fn jit_stub_str_char_at(s: JitAnxStr, i: i64) -> JitAnxStr {
+        unsafe {
+            let buf = malloc(2);
+            *buf = *s.data.add(i as usize);
+            *buf.add(1) = 0;
+            JitAnxStr { length: 1, data: buf }
+        }
+    }
+    extern "C" fn jit_stub_str_substring(s: JitAnxStr, start: i64, end: i64) -> JitAnxStr {
+        unsafe {
+            let new_len = (end - start) as usize;
+            let buf = malloc(new_len + 1);
+            std::ptr::copy_nonoverlapping(s.data.add(start as usize), buf, new_len);
+            *buf.add(new_len) = 0;
+            JitAnxStr { length: new_len as i64, data: buf }
+        }
+    }
+    extern "C" fn jit_stub_str_equals(a: JitAnxStr, b: JitAnxStr) -> i8 {
+        if a.length != b.length {
+            return 0;
+        }
+        unsafe {
+            let sa = std::slice::from_raw_parts(a.data, a.length as usize);
+            let sb = std::slice::from_raw_parts(b.data, b.length as usize);
+            (sa == sb) as i8
+        }
+    }
 
     fn map_runtime_stubs(codegen: &Codegen, ee: &inkwell::execution_engine::ExecutionEngine) {
-        let mappings: [(&str, usize); 3] = [
-            ("anx_panic_oob", jit_stub_panic_oob as usize),
-            ("anx_panic_div_zero", jit_stub_panic_div_zero as usize),
-            ("anx_panic_neg_size", jit_stub_panic_neg_size as usize),
+        let mappings: [(&str, usize); 8] = [
+            ("anx_panic_oob", jit_stub_panic_oob as *const () as usize),
+            ("anx_panic_div_zero", jit_stub_panic_div_zero as *const () as usize),
+            ("anx_panic_neg_size", jit_stub_panic_neg_size as *const () as usize),
+            ("anx_panic_str_oob", jit_stub_panic_str_oob as *const () as usize),
+            ("anx_str_concat", jit_stub_str_concat as *const () as usize),
+            ("anx_str_char_at", jit_stub_str_char_at as *const () as usize),
+            ("anx_str_substring", jit_stub_str_substring as *const () as usize),
+            ("anx_str_equals", jit_stub_str_equals as *const () as usize),
         ];
         for (name, addr) in mappings {
             if let Some(f) = codegen.module().get_function(name) {
@@ -1881,4 +2151,125 @@ mod tests {
         "19_longest_increasing_subsequence.nx"
     );
     benchmark_verifies!(benchmark_20_max_subarray, "20_max_subarray.nx");
+
+    // ---- P2 (Strings) ----
+
+    #[test]
+    fn compiles_string_builtins_field_access_and_operators() {
+        assert_verifies(
+            r#"
+            void main() {
+                string s = "hello";
+                int n = length(s);
+                int fieldLen = s.length;
+                string c = charAt(s, 0);
+                string sub = substring(s, 1, 3);
+                string cat = s + " world";
+                bool eq = s == "hello";
+                bool neq = s != "world";
+                print(n);
+                print(fieldLen);
+                print(c);
+                print(sub);
+                print(cat);
+                print(eq);
+                print(neq);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn compiles_string_ternary_and_compound_assign() {
+        assert_verifies(
+            r#"
+            void main() {
+                string a = "foo";
+                string b = "bar";
+                string picked = true ? a : b;
+                a += b;
+                print(picked);
+                print(a);
+            }
+            "#,
+        );
+    }
+
+    /// JIT-executes int-returning wrapper functions that exercise the string
+    /// runtime shim internally (concat, substring, charAt, equals) — the
+    /// same "verify() isn't enough, check real computed values" bar Phase 5
+    /// set for arrays. Wrapped as int-returning per the existing
+    /// scalar-in/scalar-out JIT restriction (see `jit_i64_0` doc comment):
+    /// string params/returns can't be safely hand-matched to a raw Rust
+    /// function pointer's ABI, but an internal-only `string` local is fine.
+    #[test]
+    fn jit_string_concat_length_and_equality_are_correct() {
+        let source = r#"
+            int concatCheck() {
+                string a = "foo";
+                string b = "bar";
+                string c = a + b;
+                if (length(c) != 6) return 0;
+                if (c != "foobar") return 0;
+                return 1;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_0(source, "concatCheck"), 1);
+    }
+
+    #[test]
+    fn jit_string_char_at_is_correct() {
+        let source = r#"
+            int charAtCheck() {
+                string s = "hello";
+                if (charAt(s, 0) != "h") return 0;
+                if (charAt(s, 4) != "o") return 0;
+                return 1;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_0(source, "charAtCheck"), 1);
+    }
+
+    #[test]
+    fn jit_string_substring_is_correct() {
+        let source = r#"
+            int substringCheck() {
+                string s = "hello world";
+                if (substring(s, 6, 11) != "world") return 0;
+                if (substring(s, 0, 5) != "hello") return 0;
+                if (length(substring(s, 2, 2)) != 0) return 0;
+                return 1;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_0(source, "substringCheck"), 1);
+    }
+
+    #[test]
+    fn jit_string_length_field_access_is_correct() {
+        let source = r#"
+            int fieldLengthCheck() {
+                string s = "hello";
+                return s.length;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_0(source, "fieldLengthCheck"), 5);
+    }
+
+    #[test]
+    fn jit_string_inequality_is_correct() {
+        let source = r#"
+            int notEqualsCheck() {
+                string a = "abc";
+                string b = "abd";
+                if (a != b) return 1;
+                return 0;
+            }
+            void main() { }
+        "#;
+        assert_eq!(jit_i64_0(source, "notEqualsCheck"), 1);
+    }
 }

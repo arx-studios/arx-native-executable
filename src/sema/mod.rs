@@ -82,7 +82,37 @@ impl Checker {
         }
     }
 
+    /// Pre-registered before user-function hoisting so `length`/`charAt`/
+    /// `substring` resolve through the ordinary `check_call` path (arity,
+    /// arg-type checking) with no special-casing at call sites — see
+    /// docs/P2/ANX-P2-Strings-Plan-v1.md §2.
+    fn declare_builtin_funcs(&mut self) {
+        self.symtab.declare_func(
+            "length".to_string(),
+            FuncSig {
+                params: vec![Type::Str],
+                return_ty: Type::Int,
+            },
+        );
+        self.symtab.declare_func(
+            "charAt".to_string(),
+            FuncSig {
+                params: vec![Type::Str, Type::Int],
+                return_ty: Type::Str,
+            },
+        );
+        self.symtab.declare_func(
+            "substring".to_string(),
+            FuncSig {
+                params: vec![Type::Str, Type::Int, Type::Int],
+                return_ty: Type::Str,
+            },
+        );
+    }
+
     fn run(mut self, program: &Program) -> Result<SemaResult, Vec<SemaError>> {
+        self.declare_builtin_funcs();
+
         // Pass 1: hoist function signatures so forward calls and recursion resolve.
         for decl in &program.decls {
             if let Decl::Func(f) = decl {
@@ -740,4 +770,89 @@ mod tests {
         "19_longest_increasing_subsequence.nx"
     );
     benchmark_type_checks!(benchmark_20_max_subarray, "20_max_subarray.nx");
+
+    // ---- P2 (Strings) ----
+
+    #[test]
+    fn valid_string_builtins_and_operators() {
+        expect_ok(
+            r#"
+            void main() {
+                string s = "hello";
+                int n = length(s);
+                string c = charAt(s, 0);
+                string sub = substring(s, 1, 3);
+                string cat = s + " world";
+                bool eq = s == "hello";
+                bool neq = s != "world";
+                print(n);
+                print(c);
+                print(sub);
+                print(cat);
+                print(eq);
+                print(neq);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn valid_string_length_field_access() {
+        expect_ok(
+            r#"
+            void main() {
+                string s = "hello";
+                print(s.length);
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn errors_on_length_arity_mismatch() {
+        let errors = expect_errors(r#"void main() { print(length("a", "b")); }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_length_arg_type_mismatch() {
+        let errors = expect_errors("void main() { print(length(5)); }");
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_char_at_arg_type_mismatch() {
+        let errors = expect_errors(r#"void main() { print(charAt("hi", "x")); }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_substring_arity_mismatch() {
+        let errors = expect_errors(r#"void main() { print(substring("hi", 0)); }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_string_plus_int() {
+        let errors = expect_errors(r#"void main() { string s = "a" + 1; }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn errors_on_string_int_equality_mismatch() {
+        let errors = expect_errors(r#"void main() { bool b = "a" == 1; }"#);
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SemaError::TypeMismatch { .. })));
+    }
 }

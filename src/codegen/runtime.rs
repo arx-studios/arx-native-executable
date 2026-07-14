@@ -4,8 +4,20 @@
 
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::types::StructType;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
+
+/// The `{ i64 length, ptr data }` layout shared by strings and arrays (see
+/// `Codegen::len_data_struct_type` in mod.rs) — duplicated here since
+/// `RuntimeFns::declare` only has a bare `Context`, not a `Codegen`. Struct
+/// params/returns across this C boundary rely on the same by-value struct
+/// ABI lowering already proven for array parameters passed between ANX
+/// functions (see docs/P2/ANX-P2-Strings-Plan-v1.md Step 3).
+fn str_struct_type<'ctx>(context: &'ctx Context) -> StructType<'ctx> {
+    let ptr_ty = context.ptr_type(AddressSpace::default());
+    context.struct_type(&[context.i64_type().into(), ptr_ty.into()], false)
+}
 
 pub struct RuntimeFns<'ctx> {
     pub malloc: FunctionValue<'ctx>,
@@ -14,14 +26,15 @@ pub struct RuntimeFns<'ctx> {
     pub print_float: FunctionValue<'ctx>,
     pub print_bool: FunctionValue<'ctx>,
     pub print_str: FunctionValue<'ctx>,
-    // Declared (and implemented in runtime.c) per the runtime-shim spec, but
-    // no P0 benchmark ever prints a raw array — codegen never emits a call
-    // to it. Kept for when a program does.
-    #[allow(dead_code)]
     pub print_array: FunctionValue<'ctx>,
     pub panic_oob: FunctionValue<'ctx>,
     pub panic_div_zero: FunctionValue<'ctx>,
     pub panic_neg_size: FunctionValue<'ctx>,
+    pub str_concat: FunctionValue<'ctx>,
+    pub str_char_at: FunctionValue<'ctx>,
+    pub str_substring: FunctionValue<'ctx>,
+    pub str_equals: FunctionValue<'ctx>,
+    pub panic_str_oob: FunctionValue<'ctx>,
 }
 
 impl<'ctx> RuntimeFns<'ctx> {
@@ -76,6 +89,35 @@ impl<'ctx> RuntimeFns<'ctx> {
             None,
         );
 
+        let str_ty = str_struct_type(context);
+        let str_concat = module.add_function(
+            "anx_str_concat",
+            str_ty.fn_type(&[str_ty.into(), str_ty.into()], false),
+            None,
+        );
+        let str_char_at = module.add_function(
+            "anx_str_char_at",
+            str_ty.fn_type(&[str_ty.into(), i64_ty.into()], false),
+            None,
+        );
+        let str_substring = module.add_function(
+            "anx_str_substring",
+            str_ty.fn_type(&[str_ty.into(), i64_ty.into(), i64_ty.into()], false),
+            None,
+        );
+        // Returns i8, not i1 — crossing the C ABI boundary as a byte matches
+        // the existing `anx_print_bool` convention (see codegen_print).
+        let str_equals = module.add_function(
+            "anx_str_equals",
+            i8_ty.fn_type(&[str_ty.into(), str_ty.into()], false),
+            None,
+        );
+        let panic_str_oob = module.add_function(
+            "anx_panic_str_oob",
+            void_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+            None,
+        );
+
         RuntimeFns {
             malloc,
             calloc,
@@ -87,6 +129,11 @@ impl<'ctx> RuntimeFns<'ctx> {
             panic_oob,
             panic_div_zero,
             panic_neg_size,
+            str_concat,
+            str_char_at,
+            str_substring,
+            str_equals,
+            panic_str_oob,
         }
     }
 }

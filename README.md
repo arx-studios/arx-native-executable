@@ -107,8 +107,8 @@ Docs use a flat `docs/P0/` through `docs/P8/` scheme — one folder per major im
 **P1 — [docs/P1/](docs/P1/) — Operators (✅ done)**
 - [Plan](docs/P1/ANX-P1-Operators-Plan-v1.md), [Tech Stack](docs/P1/ANX-P1-Tech-Stack-v1.md), [Usage Flow](docs/P1/ANX-P1-Usage-Flow-v1.md), [Progress](docs/P1/ANX-P1-Progress-v1.md), [Dogfooding Notes](docs/P1/ANX-P1-Dogfooding-Notes-v1.md)
 
-**P2 — [docs/P2/](docs/P2/) — Strings (planned, next up)**
-- [Plan](docs/P2/ANX-P2-Strings-Plan-v1.md) — length/index/concat/substring/equality
+**P2 — [docs/P2/](docs/P2/) — Strings (✅ done)**
+- [Plan](docs/P2/ANX-P2-Strings-Plan-v1.md), [Progress](docs/P2/ANX-P2-Progress-v1.md), [Dogfooding Notes](docs/P2/ANX-P2-Dogfooding-Notes-v1.md) — length/index/concat/substring/equality
 
 **P3 — [docs/P3/](docs/P3/) — Classes, non-generic (planned)**
 - [Plan](docs/P3/ANX-P3-Classes-Plan-v1.md) — fields, constructors, methods, `this`; also holds the shared key decisions for P3–P6
@@ -130,7 +130,7 @@ Docs use a flat `docs/P0/` through `docs/P8/` scheme — one folder per major im
 
 ## Roadmap
 
-P1 (Operators) is done. P2 (Strings) is next, then P3 (Classes) → P4 (Generics) → P5 (Collections) → P6 (Tree/Graph) → P7 (Diagnostics) → P8 (benchmark suite for all of it) — see `docs/P2/` through `docs/P8/` for each slice's plan. Interfaces, an AI tutor layer, an execution visualizer, and IDE tooling are off the roadmap entirely.
+P1 (Operators) and P2 (Strings) are done. P3 (Classes) is next, then P4 (Generics) → P5 (Collections) → P6 (Tree/Graph) → P7 (Diagnostics) → P8 (benchmark suite for all of it) — see `docs/P3/` through `docs/P8/` for each slice's plan. Interfaces, an AI tutor layer, an execution visualizer, and IDE tooling are off the roadmap entirely.
 
 ---
 
