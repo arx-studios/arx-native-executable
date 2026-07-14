@@ -108,7 +108,7 @@ Docs use a flat `docs/P0/` through `docs/P8/` scheme — one folder per major im
 - [Plan](docs/P1/ANX-P1-Operators-Plan-v1.md), [Tech Stack](docs/P1/ANX-P1-Tech-Stack-v1.md), [Usage Flow](docs/P1/ANX-P1-Usage-Flow-v1.md), [Progress](docs/P1/ANX-P1-Progress-v1.md), [Dogfooding Notes](docs/P1/ANX-P1-Dogfooding-Notes-v1.md)
 
 **P2 — [docs/P2/](docs/P2/) — Strings (✅ done)**
-- [Plan](docs/P2/ANX-P2-Strings-Plan-v1.md), [Progress](docs/P2/ANX-P2-Progress-v1.md), [Dogfooding Notes](docs/P2/ANX-P2-Dogfooding-Notes-v1.md) — length/index/concat/substring/equality
+- [Plan](docs/P2/ANX-P2-Strings-Plan-v1.md), [Tech Stack](docs/P2/ANX-P2-Tech-Stack-v1.md), [Usage Flow](docs/P2/ANX-P2-Usage-Flow-v1.md), [Progress](docs/P2/ANX-P2-Progress-v1.md), [Dogfooding Notes](docs/P2/ANX-P2-Dogfooding-Notes-v1.md) — length/index/concat/substring/equality
 
 **P3 — [docs/P3/](docs/P3/) — Classes, non-generic (planned)**
 - [Plan](docs/P3/ANX-P3-Classes-Plan-v1.md) — fields, constructors, methods, `this`; also holds the shared key decisions for P3–P6
