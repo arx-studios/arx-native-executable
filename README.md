@@ -6,11 +6,11 @@ A small, real compiled language purpose-built for practicing data structures and
 
 ## Why
 
-CS students practicing DSA usually reach for Python, Java, or C++ — none of which were designed for the job. Python hides memory/runtime behavior behind abstraction; Java and C++ demand heavy boilerplate for the exact structures (stacks, queues, trees, graphs) DSA problems use constantly. ANX is an attempt at a language purpose-built for this: real compiled semantics, DSA-shaped built-ins, no setup ceremony. Full rationale in the [PRD](docs/ANX-PRD-v1.md).
+CS students practicing DSA usually reach for Python, Java, or C++ — none of which were designed for the job. Python hides memory/runtime behavior behind abstraction; Java and C++ demand heavy boilerplate for the exact structures (stacks, queues, trees, graphs) DSA problems use constantly. ANX is an attempt at a language purpose-built for this: real compiled semantics, DSA-shaped built-ins, no setup ceremony. Full rationale in the [PRD](docs/P0/ANX-PRD-v1.md).
 
 ## Status
 
-**P0 is complete** — lexer through native codegen, all 20 benchmark problems passing on both the interpreter and the compiled path. Currently in Phase 8: dogfooding (real DSA practice, tracking friction for P1). [docs/ANX-Progress-v1.md](docs/ANX-Progress-v1.md) is the authoritative, continuously-updated source of truth for what's actually built — treat anything below as a snapshot, not a promise.
+**P0 is complete** — lexer through native codegen, all 20 benchmark problems passing on both the interpreter and the compiled path. Currently in Phase 8: dogfooding (real DSA practice, tracking friction for P1). [docs/P0/ANX-Progress-v1.md](docs/P0/ANX-Progress-v1.md) is the authoritative, continuously-updated source of truth for what's actually built — treat anything below as a snapshot, not a promise.
 
 | Component | Status |
 |---|---|
@@ -69,7 +69,7 @@ anx run solve.nx                         # instant interpreted execution
 anx build solve.nx -o solve && ./solve   # compile to a genuine native binary
 ```
 
-Exit codes: `0` success, `1` compile-time error, `2` runtime error — identical across the interpreted and compiled paths. Full walkthrough in [docs/ANX-Usage-Flow-v1.md](docs/ANX-Usage-Flow-v1.md).
+Exit codes: `0` success, `1` compile-time error, `2` runtime error — identical across the interpreted and compiled paths. Full walkthrough in [docs/P0/ANX-Usage-Flow-v1.md](docs/P0/ANX-Usage-Flow-v1.md).
 
 ## Testing
 
@@ -99,17 +99,38 @@ dogfood/        exploratory practice problems — not version-controlled
 
 ## Docs
 
-- [Product Requirements Doc](docs/ANX-PRD-v1.md) — problem statement, goals, P0/P1/P2 scope
-- [Syntax Draft](docs/ANX-Syntax-Draft-v1.md) — language grammar and worked examples
-- [Implementation Plan](docs/ANX-Implementation-Plan-v1.md) — phase-by-phase build plan and key engineering decisions
-- [Tech Stack](docs/ANX-Tech-Stack-v1.md) — exactly what's used at each step, and why
-- [Usage Flow](docs/ANX-Usage-Flow-v1.md) — the full CLI / user-facing walkthrough
-- [Progress Tracker](docs/ANX-Progress-v1.md) — what's actually built, phase by phase
-- [Dogfooding Notes](docs/ANX-Dogfooding-Notes-v1.md) — real-practice log and friction points
+Docs use a flat `docs/P0/` through `docs/P8/` scheme — one folder per major implementation slice, in build order. **This is not the same thing as the PRD's own P0/P1/P2 milestone labels** (which group several of these slices together) — the PRD and Syntax Draft are whole-project documents that happen to live under `P0/` since that's where they were authored, but the per-slice numbering below is purely sequencing. Interfaces, an AI Socratic tutor layer, an execution visualizer, and IDE tooling (the PRD's old "P2 milestone") have been dropped from the roadmap entirely, not deferred.
+
+**P0 — [docs/P0/](docs/P0/) — the initial compiler, frozen**
+- [Product Requirements Doc](docs/P0/ANX-PRD-v1.md), [Syntax Draft](docs/P0/ANX-Syntax-Draft-v1.md), [Implementation Plan](docs/P0/ANX-Implementation-Plan-v1.md), [Tech Stack](docs/P0/ANX-Tech-Stack-v1.md), [Usage Flow](docs/P0/ANX-Usage-Flow-v1.md), [Progress Tracker](docs/P0/ANX-Progress-v1.md) (Phases 0–8), [Dogfooding Notes](docs/P0/ANX-Dogfooding-Notes-v1.md) (the original 10-problem log)
+
+**P1 — [docs/P1/](docs/P1/) — Operators (✅ done)**
+- [Plan](docs/P1/ANX-P1-Operators-Plan-v1.md), [Tech Stack](docs/P1/ANX-P1-Tech-Stack-v1.md), [Usage Flow](docs/P1/ANX-P1-Usage-Flow-v1.md), [Progress](docs/P1/ANX-P1-Progress-v1.md), [Dogfooding Notes](docs/P1/ANX-P1-Dogfooding-Notes-v1.md)
+
+**P2 — [docs/P2/](docs/P2/) — Strings (planned, next up)**
+- [Plan](docs/P2/ANX-P2-Strings-Plan-v1.md) — length/index/concat/substring/equality
+
+**P3 — [docs/P3/](docs/P3/) — Classes, non-generic (planned)**
+- [Plan](docs/P3/ANX-P3-Classes-Plan-v1.md) — fields, constructors, methods, `this`; also holds the shared key decisions for P3–P6
+
+**P4 — [docs/P4/](docs/P4/) — Generics (planned)**
+- [Plan](docs/P4/ANX-P4-Generics-Plan-v1.md) — monomorphized on use
+
+**P5 — [docs/P5/](docs/P5/) — Collections (planned)**
+- [Plan](docs/P5/ANX-P5-Collections-Plan-v1.md) — `List`/`Stack`/`Queue`/`HashMap`, written in ANX itself as an auto-included prelude
+
+**P6 — [docs/P6/](docs/P6/) — Tree/Graph (planned)**
+- [Plan](docs/P6/ANX-P6-TreeGraph-Plan-v1.md) — built on classes + collections, not new primitives
+
+**P7 — [docs/P7/](docs/P7/) — Diagnostics polish (planned)**
+- [Plan](docs/P7/ANX-P7-Diagnostics-Plan-v1.md) — line:col everywhere, clearer messages
+
+**P8 — [docs/P8/](docs/P8/) — Benchmark suite for P3–P6 (planned)**
+- [Plan](docs/P8/ANX-P8-BenchmarkSuite-Plan-v1.md) — 10 new problems needing classes/generics/collections/Tree/Graph
 
 ## Roadmap
 
-P1 (built-in `List`/`Stack`/`Queue`/`HashMap`, generics, classes) and P2 (interfaces, an AI Socratic tutor layer, an execution visualizer, IDE tooling) are scoped in the [PRD](docs/ANX-PRD-v1.md) but not started — P0 has to actually be worth using first.
+P1 (Operators) is done. P2 (Strings) is next, then P3 (Classes) → P4 (Generics) → P5 (Collections) → P6 (Tree/Graph) → P7 (Diagnostics) → P8 (benchmark suite for all of it) — see `docs/P2/` through `docs/P8/` for each slice's plan. Interfaces, an AI tutor layer, an execution visualizer, and IDE tooling are off the roadmap entirely.
 
 ---
 

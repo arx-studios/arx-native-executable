@@ -1,6 +1,7 @@
 # ANX — Progress Tracker (v1)
 
-**Companion to:** [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Dogfooding-Notes-v1.md](ANX-Dogfooding-Notes-v1.md)
+**Companion to:** [ANX-Implementation-Plan-v1.md](ANX-Implementation-Plan-v1.md), [ANX-Tech-Stack-v1.md](ANX-Tech-Stack-v1.md), [ANX-Usage-Flow-v1.md](ANX-Usage-Flow-v1.md), [ANX-Dogfooding-Notes-v1.md](ANX-Dogfooding-Notes-v1.md), [../P1/ANX-P1-Progress-v1.md](../P1/ANX-P1-Progress-v1.md) (P1 tracker)
+**Scope:** Phases 0–8 (P0 + initial dogfooding) only. P1 work (operators, strings, classes/generics/collections) is tracked separately in [../P1/ANX-P1-Progress-v1.md](../P1/ANX-P1-Progress-v1.md) — this file is now historical/frozen for P0.
 **Purpose:** living record of what's actually been built, phase by phase, against the Implementation Plan's exit gates — check this before assuming any phase's state; it's the source of truth over memory of past conversations.
 
 **How to update:** when a phase's exit gate is met, flip its row in the table below, fill in its detail section, and append one line to the changelog at the bottom with the date and commit hash.
@@ -19,7 +20,7 @@
 | 5 — LLVM Codegen | ✅ Done | Yes | `7293657` |
 | 6 — Compile Pipeline & CLI | ✅ Done | Yes | `0252e9a` |
 | 7 — Benchmark Suite (20 problems) | ✅ Done | Yes | `137141a` |
-| 8 — Dogfooding (10 real problems) | 🟡 In progress | 0/10 | `132e515`, `fb661d0`, `fc33e7b` |
+| 8 — Dogfooding (10 real problems) | 🟡 In progress | 1/10 by Ayushman (10/10 language-capability, see notes) | `132e515`, `fb661d0`, `fc33e7b` + uncommitted |
 
 ---
 
@@ -109,10 +110,12 @@
 ### Phase 8 — Dogfooding 🟡
 - **This phase is fundamentally different from 0–7: it's a usage phase, not a coding phase.** The exit gate ("10 problems solved without falling back to Java") is about Ayushman's own real DSA practice, not something achievable by writing more compiler code — I can't autonomously satisfy it, only support it.
 - Set up `docs/ANX-Dogfooding-Notes-v1.md`: a running log of problems solved and friction points hit, per the plan's requirement to capture friction "somewhere durable" as the primary input for what P1 actually needs (beyond the PRD's current P1 wishlist).
-- Solved 1 problem as a first entry to prove the whole workflow end-to-end on a problem *outside* the fixed benchmark suite — see the notes file for which problem, the friction hit, and the fix made as a result.
+- Solved 1 problem (N-Queens) as a first entry to prove the whole workflow end-to-end on a problem *outside* the fixed benchmark suite — no friction hit.
+- **At Ayushman's explicit request, Claude then wrote and solved 9 more problems** (sieve of Eratosthenes, trapping rain water, array rotation, move-zeroes, count-inversions-via-merge-sort, Josephus, matrix transpose, single-number, quickselect) to get a *language-capability* signal quickly. **This is tracked separately from the PRD's actual metric** (see the notes file's honesty note): the PRD measures *Ayushman's own* usage preference, which only entry 1 reflects. Language-capability count is 10/10 (all correct, both paths); the PRD-metric count is still 1/10.
+- **One real friction point found** (entry 9, Single Number): ANX has no bitwise operators at all (confirmed against the lexer's token set — no `&`/`|`/`^`/`<<`/`>>`) and no collections yet, so the idiomatic O(n) XOR-fold or hash-count solution isn't reachable; had to fall back to an O(n²) brute force. Notable since bitwise operators aren't even on the current P1 wishlist — flagged in the notes file as a candidate for whatever comes after P1. The other 8 problems hit no friction.
 - `dogfood/` (where these practice problems live) is intentionally **not version-controlled** — added to `.gitignore` and untracked from git, since it's exploratory scratch space distinct from the frozen `tests/benchmarks/` regression suite. Files still live on disk locally; they just don't get committed.
-- **0/10 solved by Ayushman** — the real count only moves as actual practice happens.
-- Commits: `132e515` (dogfooding notes + first entry), `fb661d0` (`.gitignore` entry), `fc33e7b` (untrack `dogfood/`) — all pushed to `origin/main`.
+- **Exit gate status: not met.** 10/10 on language capability, but only 1/10 on the metric that actually matters here (Ayushman's own practice) — this phase stays open until that's real, whether by replacing these 9 or adding genuine ones on top.
+- Commits: `132e515` (dogfooding notes + first entry), `fb661d0` (`.gitignore` entry), `fc33e7b` (untrack `dogfood/`) — all pushed to `origin/main`. The 9 new problems + updated notes not yet committed.
 
 ---
 
@@ -126,4 +129,5 @@
 - **2026-07-08** — Phase 5 (LLVM Codegen) complete; all 20 benchmarks emit verifiable IR, plus 6 JIT-executed correctness checks beyond the literal exit gate. Revised the array runtime layout (by-value struct, not heap pointer-to-struct) and bool representation (`i1` throughout) from this doc's original sketch, based on what LLVM 21's opaque pointers actually make simplest. Commit `7293657`, pushed.
 - **2026-07-08** — Phase 6 (Compile Pipeline & CLI) complete. `anx check|run|build` all working with matching exit codes (0/1/2); `anx build` links a C runtime shim compiled fresh each run, and now also emits the array-bounds/div-zero/negative-size runtime guards Phase 5 deferred, so the compiled path fails identically to the interpreter. All 20 benchmarks manually verified to match between interpreter and compiled binary. Commit `0252e9a`, pushed.
 - **2026-07-08** — Phase 7 (Benchmark Suite) complete: formalized the already-verified 20 programs into `.expected` fixtures + `tests/integration.rs`. All 20 pass on both interpreter and compiled path — **this is the PRD's leading success metric and completes the entire P0 milestone.** Only Phase 8 (Dogfooding) remains. Commit `137141a`, pushed.
-- **2026-07-12** — Phase 8 (Dogfooding) started: created `docs/ANX-Dogfooding-Notes-v1.md` and `dogfood/` for problems outside the fixed benchmark suite. Seeded it by solving N-Queens (n=8, counts 92 solutions) — matched on both paths, no friction hit. 1/10; the other 9 are Ayushman's own real placement-prep practice, not something this session can complete. `dogfood/` subsequently untracked from git (added to `.gitignore` — it's exploratory scratch space, not a regression suite). Commits `132e515`, `fb661d0`, `fc33e7b`, all pushed.
+- **2026-07-12** — Phase 8 (Dogfooding) started: created `docs/ANX-Dogfooding-Notes-v1.md` and `dogfood/` for problems outside the fixed benchmark suite. Seeded it by solving N-Queens (n=8, counts 92 solutions) — matched on both paths, no friction hit. `dogfood/` subsequently untracked from git (added to `.gitignore` — it's exploratory scratch space, not a regression suite). Commits `132e515`, `fb661d0`, `fc33e7b`, all pushed.
+- **2026-07-12** — At Ayushman's request, Claude wrote and solved 9 more dogfooding problems (sieve, trapping rain water, rotate array, move zeroes, count inversions, Josephus, matrix transpose, single number, quickselect) — all correct on both paths, no bugs found. Tracked as a *separate* language-capability count (now 10/10) from the PRD's actual metric (Ayushman's own usage, still 1/10) — see the notes file's honesty note. One real friction point found: no bitwise operators exist at all, forcing an O(n²) workaround for "single number" instead of the idiomatic XOR solution — flagged for post-P1 consideration since it's not on the current P1 wishlist. Phase 8's exit gate is **not** considered met by this work. Not yet committed.
